@@ -755,6 +755,8 @@ func (s *Session) HandleRequest(ctx context.Context, method string, params json.
 		return s.handleFormatDocumentRange(ctx, parsed.(*FormatDocumentRangeParams))
 	case string(MethodOrganizeImports):
 		return s.handleOrganizeImports(ctx, parsed.(*OrganizeImportsParams))
+	case string(MethodRename):
+		return s.handleRename(ctx, parsed.(*RenameParams))
 	case string(MethodGetConstantValue):
 		return s.handleGetConstantValue(ctx, parsed.(*CheckerNodeParams))
 	case string(MethodGetSignatureFromDeclaration):

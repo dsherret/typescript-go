@@ -157,6 +157,7 @@ const (
 	MethodFormatDocument                    Method = "formatDocument"
 	MethodFormatDocumentRange               Method = "formatDocumentRange"
 	MethodOrganizeImports                   Method = "organizeImports"
+	MethodRename                            Method = "rename"
 	MethodGetTrueTypeOfConditionalType      Method = "getTrueTypeOfConditionalType"
 	MethodGetFalseTypeOfConditionalType     Method = "getFalseTypeOfConditionalType"
 	MethodGetConstantValue                  Method = "getConstantValue"
@@ -475,6 +476,7 @@ var unmarshalers = map[Method]func([]byte) (any, error){
 	MethodFormatDocument:                    unmarshallerFor[FormatDocumentParams],
 	MethodFormatDocumentRange:               unmarshallerFor[FormatDocumentRangeParams],
 	MethodOrganizeImports:                   unmarshallerFor[OrganizeImportsParams],
+	MethodRename:                            unmarshallerFor[RenameParams],
 	MethodGetConstantValue:                  unmarshallerFor[CheckerNodeParams],
 	MethodGetSignatureFromDeclaration:       unmarshallerFor[CheckerNodeParams],
 	MethodGetExportSpecifierLocalTarget:     unmarshallerFor[CheckerNodeParams],
@@ -1145,6 +1147,22 @@ const (
 	// OrganizeImportsModeRemoveUnused only removes unused imports.
 	OrganizeImportsModeRemoveUnused OrganizeImportsMode = "removeUnused"
 )
+
+// FileTextEdits groups edits by the file they apply to.
+type FileTextEdits struct {
+	FileName string      `json:"fileName"`
+	Edits    []*TextEdit `json:"edits"`
+}
+
+// RenameParams are the parameters for the rename method. Position is a
+// character offset into the file.
+type RenameParams struct {
+	Snapshot SnapshotID         `json:"snapshot"`
+	Project  ProjectID          `json:"project"`
+	File     DocumentIdentifier `json:"file"`
+	Position int                `json:"position"`
+	NewName  string             `json:"newName"`
+}
 
 // OrganizeImportsParams are the parameters for the organizeImports method.
 type OrganizeImportsParams struct {

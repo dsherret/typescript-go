@@ -61,6 +61,7 @@ import type {
     DocumentPosition,
     ImportAdderActionRequest,
     ImportSymbolActionRequest,
+    FileTextEdits,
     FormattingOptions,
     OrganizeImportsMode,
     IndexInfoResponse,
@@ -795,6 +796,21 @@ export class Project {
             project: this.id,
             file,
             ...(mode !== undefined ? { mode } : {}),
+        });
+        return data ?? [];
+    }
+
+    /**
+     * Returns the edits that rename the symbol at `position`, grouped by file.
+     * An empty result means the element cannot be renamed.
+     */
+    rename(file: DocumentIdentifier, position: number, newName: string): readonly FileTextEdits[] {
+        const data = this.client.apiRequest<FileTextEdits[]>("rename", {
+            snapshot: this.snapshotId,
+            project: this.id,
+            file,
+            position,
+            newName,
         });
         return data ?? [];
     }

@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
 	"github.com/microsoft/typescript-go/internal/compiler"
@@ -79,6 +81,54 @@ func (s *Session) handleOrganizeImports(ctx context.Context, params *OrganizeImp
 
 	editsByFile := setup.langSvc.OrganizeImports(ctx, setup.sourceFile, setup.program, kind)
 	return toAPITextEdits(setup.sourceFile, setup.sd.snapshot.Converters(), editsByFile[setup.sourceFile.FileName()]), nil
+}
+
+// handleRename returns the edits that rename the symbol at a position, grouped
+// by file. An empty result means the element cannot be renamed.
+func (s *Session) handleRename(ctx context.Context, params *RenameParams) ([]*FileTextEdits, error) {
+	setup, err := s.setupLanguageServiceForFile(ctx, params.Snapshot, params.Project, params.File)
+	if err != nil {
+		return nil, err
+	}
+	defer setup.done()
+
+	converters := setup.sd.snapshot.Converters()
+	position := converters.PositionToLineAndCharacter(
+		setup.sourceFile,
+		core.TextPos(setup.sourceFile.GetPositionMap().UTF16ToUTF8(params.Position)),
+	)
+
+	// A nil orchestrator selects the single-project path: renames are resolved
+	// against this project's program only, which is the API's model.
+	response, err := setup.langSvc.ProvideRename(ctx, &lsproto.RenameParams{
+		TextDocument: lsproto.TextDocumentIdentifier{Uri: setup.documentURI},
+		Position:     position,
+		NewName:      params.NewName,
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
+	if response.WorkspaceEdit == nil || response.WorkspaceEdit.Changes == nil {
+		return []*FileTextEdits{}, nil
+	}
+
+	result := make([]*FileTextEdits, 0, len(*response.WorkspaceEdit.Changes))
+	for uri, edits := range *response.WorkspaceEdit.Changes {
+		fileName := uri.FileName()
+		sourceFile := setup.program.GetSourceFile(fileName)
+		if sourceFile == nil {
+			continue
+		}
+		result = append(result, &FileTextEdits{
+			FileName: fileName,
+			Edits:    toAPITextEdits(sourceFile, converters, edits),
+		})
+	}
+	// The wire order of a map is unspecified; sort so results are deterministic.
+	slices.SortFunc(result, func(a, b *FileTextEdits) int {
+		return strings.Compare(a.FileName, b.FileName)
+	})
+	return result, nil
 }
 
 // languageServiceSetup bundles the state a language service handler needs: the

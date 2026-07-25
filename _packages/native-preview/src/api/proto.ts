@@ -41,6 +41,12 @@ export interface TextEdit {
     newText: string;
 }
 
+/** Edits grouped by the file they apply to. */
+export interface FileTextEdits {
+    fileName: string;
+    edits: TextEdit[];
+}
+
 /** Formatter settings. Unset fields fall back to the server's defaults. */
 export interface FormattingOptions {
     tabSize?: number;
