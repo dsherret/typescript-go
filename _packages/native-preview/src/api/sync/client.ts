@@ -1,9 +1,12 @@
+import type { FileSystem } from "../fs.ts";
 import { fsCallbackNames } from "../fs.ts";
 import {
     type ClientOptions,
     type ClientSocketOptions,
     type ClientSpawnOptions,
+    type ClientWasmOptions,
     isSpawnOptions,
+    isWasmOptions,
     resolveExePath,
 } from "../options.ts";
 import { SyncRpcChannel } from "../syncChannel.ts";
@@ -14,15 +17,27 @@ import {
     TimingCollector,
     type TimingInfo,
 } from "../timing.ts";
+import type { RpcChannel } from "../wasmChannel.ts";
 
-export type { ClientOptions, ClientSocketOptions, ClientSpawnOptions };
+export type { ClientOptions, ClientSocketOptions, ClientSpawnOptions, ClientWasmOptions };
 
 export class Client {
-    private channel: SyncRpcChannel;
+    private channel: RpcChannel;
     private encoder = new TextEncoder();
     private timing: TimingCollector | undefined;
 
     constructor(options: ClientOptions) {
+        // In-process WebAssembly transport: use the provided channel directly.
+        // No subprocess is spawned; only the FS callbacks are wired up.
+        if (isWasmOptions(options)) {
+            this.channel = options.channel;
+            if (options.collectTiming) {
+                this.timing = new TimingCollector();
+            }
+            this.registerFsCallbacks(options.channel, options.fs);
+            return;
+        }
+
         if (!isSpawnOptions(options)) {
             throw new Error("Socket connections are not yet supported in the sync client");
         }
@@ -56,33 +71,39 @@ export class Client {
         const channel = new SyncRpcChannel(resolveExePath(options), args, collectTiming);
         this.channel = channel;
 
-        if (options.fs) {
-            for (const name of enabledCallbacks) {
-                if (name === "writeFile") {
-                    if (!options.fs.writeFile) continue;
-                    const callback = options.fs.writeFile;
+        this.registerFsCallbacks(channel, options.fs);
+    }
 
-                    channel.registerCallback(name, (_, arg) => {
-                        const { path, data } = JSON.parse(arg);
-                        callback(path, data);
-                        return "";
-                    });
+    /**
+     * Wires virtual filesystem callbacks onto the channel. The wire contract is
+     * transport-independent, so this is shared by the subprocess and Wasm paths.
+     */
+    private registerFsCallbacks(channel: RpcChannel, fs: FileSystem | undefined): void {
+        if (!fs) return;
+        for (const name of fsCallbackNames) {
+            if (!fs[name]) continue;
 
-                    continue;
-                }
-
-                const callback = options.fs[name]!;
+            if (name === "writeFile") {
+                const callback = fs.writeFile!;
                 channel.registerCallback(name, (_, arg) => {
-                    const result = callback(JSON.parse(arg));
-                    if (name === "readFile") {
-                        // readFile has 3 returns: string (content), null (not found), undefined (fall back).
-                        // Wrap in object to preserve null vs undefined distinction.
-                        if (result === undefined) return "";
-                        return JSON.stringify({ content: result });
-                    }
-                    return JSON.stringify(result) ?? "";
+                    const { path, data } = JSON.parse(arg);
+                    callback(path, data);
+                    return "";
                 });
+                continue;
             }
+
+            const callback = fs[name]!;
+            channel.registerCallback(name, (_, arg) => {
+                const result = callback(JSON.parse(arg));
+                if (name === "readFile") {
+                    // readFile has 3 returns: string (content), null (not found), undefined (fall back).
+                    // Wrap in object to preserve null vs undefined distinction.
+                    if (result === undefined) return "";
+                    return JSON.stringify({ content: result });
+                }
+                return JSON.stringify(result) ?? "";
+            });
         }
     }
 

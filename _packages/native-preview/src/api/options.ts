@@ -4,10 +4,24 @@
 
 import getExePath from "#getExePath";
 import type { FileSystem } from "./fs.ts";
+import type { RpcChannel } from "./wasmChannel.ts";
 
 export interface ClientSocketOptions {
     /** Path to the Unix domain socket or Windows named pipe for API communication */
     pipe: string;
+}
+
+export interface ClientWasmOptions {
+    /**
+     * A pre-built request channel, e.g. a {@link WasmChannel} bound to an
+     * in-process WebAssembly reactor. When provided, no subprocess is spawned
+     * and the API server runs in the same process as the client.
+     */
+    channel: RpcChannel;
+    /** Virtual filesystem callbacks */
+    fs?: FileSystem;
+    /** When true, collect per-request timing information. */
+    collectTiming?: boolean;
 }
 
 export interface ClientSpawnOptions {
@@ -27,10 +41,14 @@ export interface ClientSpawnOptions {
     collectTiming?: boolean;
 }
 
-export type ClientOptions = ClientSocketOptions | ClientSpawnOptions;
+export type ClientOptions = ClientSocketOptions | ClientSpawnOptions | ClientWasmOptions;
 
 export function isSpawnOptions(options: ClientOptions): options is ClientSpawnOptions {
-    return !("pipe" in options);
+    return !("pipe" in options) && !("channel" in options);
+}
+
+export function isWasmOptions(options: ClientOptions): options is ClientWasmOptions {
+    return "channel" in options;
 }
 
 export function resolveExePath(options: ClientSpawnOptions): string {
