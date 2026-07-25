@@ -61,6 +61,7 @@ import type {
     DocumentPosition,
     ImportAdderActionRequest,
     ImportSymbolActionRequest,
+    FileSpan,
     FileTextEdits,
     FormattingOptions,
     OrganizeImportsMode,
@@ -811,6 +812,28 @@ export class Project {
             file,
             position,
             newName,
+        });
+        return data ?? [];
+    }
+
+    /** Returns the locations that define the symbol at `position`. */
+    getDefinition(file: DocumentIdentifier, position: number): readonly FileSpan[] {
+        const data = this.client.apiRequest<FileSpan[]>("getDefinition", {
+            snapshot: this.snapshotId,
+            project: this.id,
+            file,
+            position,
+        });
+        return data ?? [];
+    }
+
+    /** Returns the locations that implement the symbol at `position`. */
+    getImplementations(file: DocumentIdentifier, position: number): readonly FileSpan[] {
+        const data = this.client.apiRequest<FileSpan[]>("getImplementations", {
+            snapshot: this.snapshotId,
+            project: this.id,
+            file,
+            position,
         });
         return data ?? [];
     }

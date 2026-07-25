@@ -158,6 +158,8 @@ const (
 	MethodFormatDocumentRange               Method = "formatDocumentRange"
 	MethodOrganizeImports                   Method = "organizeImports"
 	MethodRename                            Method = "rename"
+	MethodGetDefinition                     Method = "getDefinition"
+	MethodGetImplementations                Method = "getImplementations"
 	MethodGetTrueTypeOfConditionalType      Method = "getTrueTypeOfConditionalType"
 	MethodGetFalseTypeOfConditionalType     Method = "getFalseTypeOfConditionalType"
 	MethodGetConstantValue                  Method = "getConstantValue"
@@ -477,6 +479,8 @@ var unmarshalers = map[Method]func([]byte) (any, error){
 	MethodFormatDocumentRange:               unmarshallerFor[FormatDocumentRangeParams],
 	MethodOrganizeImports:                   unmarshallerFor[OrganizeImportsParams],
 	MethodRename:                            unmarshallerFor[RenameParams],
+	MethodGetDefinition:                     unmarshallerFor[FilePositionParams],
+	MethodGetImplementations:                unmarshallerFor[FilePositionParams],
 	MethodGetConstantValue:                  unmarshallerFor[CheckerNodeParams],
 	MethodGetSignatureFromDeclaration:       unmarshallerFor[CheckerNodeParams],
 	MethodGetExportSpecifierLocalTarget:     unmarshallerFor[CheckerNodeParams],
@@ -1152,6 +1156,22 @@ const (
 type FileTextEdits struct {
 	FileName string      `json:"fileName"`
 	Edits    []*TextEdit `json:"edits"`
+}
+
+// FileSpan is a span of a file, in character offsets.
+type FileSpan struct {
+	FileName string `json:"fileName"`
+	Pos      int    `json:"pos"`
+	End      int    `json:"end"`
+}
+
+// FilePositionParams identify a character offset within a file. They are the
+// parameters for the getDefinition and getImplementations methods.
+type FilePositionParams struct {
+	Snapshot SnapshotID         `json:"snapshot"`
+	Project  ProjectID          `json:"project"`
+	File     DocumentIdentifier `json:"file"`
+	Position int                `json:"position"`
 }
 
 // RenameParams are the parameters for the rename method. Position is a

@@ -757,6 +757,10 @@ func (s *Session) HandleRequest(ctx context.Context, method string, params json.
 		return s.handleOrganizeImports(ctx, parsed.(*OrganizeImportsParams))
 	case string(MethodRename):
 		return s.handleRename(ctx, parsed.(*RenameParams))
+	case string(MethodGetDefinition):
+		return s.handleGetDefinition(ctx, parsed.(*FilePositionParams))
+	case string(MethodGetImplementations):
+		return s.handleGetImplementations(ctx, parsed.(*FilePositionParams))
 	case string(MethodGetConstantValue):
 		return s.handleGetConstantValue(ctx, parsed.(*CheckerNodeParams))
 	case string(MethodGetSignatureFromDeclaration):

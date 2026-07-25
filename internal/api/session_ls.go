@@ -93,16 +93,12 @@ func (s *Session) handleRename(ctx context.Context, params *RenameParams) ([]*Fi
 	defer setup.done()
 
 	converters := setup.sd.snapshot.Converters()
-	position := converters.PositionToLineAndCharacter(
-		setup.sourceFile,
-		core.TextPos(setup.sourceFile.GetPositionMap().UTF16ToUTF8(params.Position)),
-	)
 
 	// A nil orchestrator selects the single-project path: renames are resolved
 	// against this project's program only, which is the API's model.
 	response, err := setup.langSvc.ProvideRename(ctx, &lsproto.RenameParams{
 		TextDocument: lsproto.TextDocumentIdentifier{Uri: setup.documentURI},
-		Position:     position,
+		Position:     setup.toLSPPosition(params.Position),
 		NewName:      params.NewName,
 	}, nil)
 	if err != nil {
@@ -129,6 +125,41 @@ func (s *Session) handleRename(ctx context.Context, params *RenameParams) ([]*Fi
 		return strings.Compare(a.FileName, b.FileName)
 	})
 	return result, nil
+}
+
+// handleGetDefinition returns the locations that define the symbol at a position.
+func (s *Session) handleGetDefinition(ctx context.Context, params *FilePositionParams) ([]*FileSpan, error) {
+	setup, err := s.setupLanguageServiceForFile(ctx, params.Snapshot, params.Project, params.File)
+	if err != nil {
+		return nil, err
+	}
+	defer setup.done()
+
+	response, err := setup.langSvc.ProvideDefinition(ctx, setup.documentURI, setup.toLSPPosition(params.Position))
+	if err != nil {
+		return nil, err
+	}
+	return setup.toAPIFileSpans(response), nil
+}
+
+// handleGetImplementations returns the locations that implement the symbol at a
+// position.
+func (s *Session) handleGetImplementations(ctx context.Context, params *FilePositionParams) ([]*FileSpan, error) {
+	setup, err := s.setupLanguageServiceForFile(ctx, params.Snapshot, params.Project, params.File)
+	if err != nil {
+		return nil, err
+	}
+	defer setup.done()
+
+	// As with rename, a nil orchestrator selects the single-project path.
+	response, err := setup.langSvc.ProvideImplementations(ctx, &lsproto.ImplementationParams{
+		TextDocument: lsproto.TextDocumentIdentifier{Uri: setup.documentURI},
+		Position:     setup.toLSPPosition(params.Position),
+	}, nil)
+	if err != nil {
+		return nil, err
+	}
+	return setup.toAPIFileSpans(response), nil
 }
 
 // languageServiceSetup bundles the state a language service handler needs: the
@@ -170,6 +201,51 @@ func (s *Session) setupLanguageServiceForFile(ctx context.Context, snapshot Snap
 		documentURI: file.ToURI(s.projectSession.GetCurrentDirectory()),
 		done:        func() {},
 	}, nil
+}
+
+// toLSPPosition converts a character offset in the setup's file to an LSP position.
+func (setup *languageServiceSetup) toLSPPosition(position int) lsproto.Position {
+	return setup.sd.snapshot.Converters().PositionToLineAndCharacter(
+		setup.sourceFile,
+		core.TextPos(setup.sourceFile.GetPositionMap().UTF16ToUTF8(position)),
+	)
+}
+
+// toAPIFileSpans flattens an LSP location response into offset-based spans.
+// Definition-style responses are a union of one location, many locations, or
+// links, so all three shapes are normalized here.
+func (setup *languageServiceSetup) toAPIFileSpans(response lsproto.LocationOrLocationsOrDefinitionLinksOrNull) []*FileSpan {
+	var locations []lsproto.Location
+	switch {
+	case response.Location != nil:
+		locations = []lsproto.Location{*response.Location}
+	case response.Locations != nil:
+		locations = *response.Locations
+	case response.DefinitionLinks != nil:
+		for _, link := range *response.DefinitionLinks {
+			if link == nil {
+				continue
+			}
+			locations = append(locations, lsproto.Location{Uri: link.TargetUri, Range: link.TargetSelectionRange})
+		}
+	}
+
+	converters := setup.sd.snapshot.Converters()
+	result := make([]*FileSpan, 0, len(locations))
+	for _, location := range locations {
+		fileName := location.Uri.FileName()
+		sourceFile := setup.program.GetSourceFile(fileName)
+		if sourceFile == nil {
+			continue
+		}
+		positionMap := sourceFile.GetPositionMap()
+		result = append(result, &FileSpan{
+			FileName: fileName,
+			Pos:      positionMap.UTF8ToUTF16(int(converters.LineAndCharacterToPosition(sourceFile, location.Range.Start))),
+			End:      positionMap.UTF8ToUTF16(int(converters.LineAndCharacterToPosition(sourceFile, location.Range.End))),
+		})
+	}
+	return result
 }
 
 // toAPIEditsFromResponse converts an LSP formatting response into API edits.

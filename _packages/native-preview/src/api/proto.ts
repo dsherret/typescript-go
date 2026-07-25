@@ -47,6 +47,13 @@ export interface FileTextEdits {
     edits: TextEdit[];
 }
 
+/** A span of a file, in character offsets. */
+export interface FileSpan {
+    fileName: string;
+    pos: number;
+    end: number;
+}
+
 /** Formatter settings. Unset fields fall back to the server's defaults. */
 export interface FormattingOptions {
     tabSize?: number;
