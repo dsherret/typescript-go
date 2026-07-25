@@ -154,6 +154,9 @@ const (
 	MethodGetBaseConstraintOfType           Method = "getBaseConstraintOfType"
 	MethodGetTypeArguments                  Method = "getTypeArguments"
 	MethodGetImportAdderEdits               Method = "getImportAdderEdits"
+	MethodFormatDocument                    Method = "formatDocument"
+	MethodFormatDocumentRange               Method = "formatDocumentRange"
+	MethodOrganizeImports                   Method = "organizeImports"
 	MethodGetTrueTypeOfConditionalType      Method = "getTrueTypeOfConditionalType"
 	MethodGetFalseTypeOfConditionalType     Method = "getFalseTypeOfConditionalType"
 	MethodGetConstantValue                  Method = "getConstantValue"
@@ -469,6 +472,9 @@ var unmarshalers = map[Method]func([]byte) (any, error){
 	MethodGetDefaultFromTypeParameter:       unmarshallerFor[GetTypePropertyParams],
 	MethodGetTypeArguments:                  unmarshallerFor[CheckerTypeParams],
 	MethodGetImportAdderEdits:               unmarshallerFor[GetImportAdderEditsParams],
+	MethodFormatDocument:                    unmarshallerFor[FormatDocumentParams],
+	MethodFormatDocumentRange:               unmarshallerFor[FormatDocumentRangeParams],
+	MethodOrganizeImports:                   unmarshallerFor[OrganizeImportsParams],
 	MethodGetConstantValue:                  unmarshallerFor[CheckerNodeParams],
 	MethodGetSignatureFromDeclaration:       unmarshallerFor[CheckerNodeParams],
 	MethodGetExportSpecifierLocalTarget:     unmarshallerFor[CheckerNodeParams],
@@ -1099,6 +1105,53 @@ type TextEdit struct {
 	Pos     int    `json:"pos"`
 	End     int    `json:"end"`
 	NewText string `json:"newText"`
+}
+
+// FormattingOptions configures the formatter. Unset fields fall back to the
+// server's configured defaults.
+type FormattingOptions struct {
+	TabSize                *int  `json:"tabSize,omitempty"`
+	InsertSpaces           *bool `json:"insertSpaces,omitempty"`
+	TrimTrailingWhitespace *bool `json:"trimTrailingWhitespace,omitempty"`
+}
+
+// FormatDocumentParams are the parameters for the formatDocument method.
+type FormatDocumentParams struct {
+	Snapshot SnapshotID         `json:"snapshot"`
+	Project  ProjectID          `json:"project"`
+	File     DocumentIdentifier `json:"file"`
+	Options  *FormattingOptions `json:"options,omitempty"`
+}
+
+// FormatDocumentRangeParams are the parameters for the formatDocumentRange
+// method. Pos and End are character offsets into the file.
+type FormatDocumentRangeParams struct {
+	Snapshot SnapshotID         `json:"snapshot"`
+	Project  ProjectID          `json:"project"`
+	File     DocumentIdentifier `json:"file"`
+	Pos      int                `json:"pos"`
+	End      int                `json:"end"`
+	Options  *FormattingOptions `json:"options,omitempty"`
+}
+
+// OrganizeImportsMode selects which import transformations to apply.
+type OrganizeImportsMode string
+
+const (
+	// OrganizeImportsModeAll sorts, combines, and removes unused imports.
+	OrganizeImportsModeAll OrganizeImportsMode = "all"
+	// OrganizeImportsModeSortAndCombine sorts and combines, keeping unused imports.
+	OrganizeImportsModeSortAndCombine OrganizeImportsMode = "sortAndCombine"
+	// OrganizeImportsModeRemoveUnused only removes unused imports.
+	OrganizeImportsModeRemoveUnused OrganizeImportsMode = "removeUnused"
+)
+
+// OrganizeImportsParams are the parameters for the organizeImports method.
+type OrganizeImportsParams struct {
+	Snapshot SnapshotID          `json:"snapshot"`
+	Project  ProjectID           `json:"project"`
+	File     DocumentIdentifier  `json:"file"`
+	Mode     OrganizeImportsMode `json:"mode,omitempty"`
 }
 
 // TypeToTypeNodeParams are the parameters for the typeToTypeNode method.

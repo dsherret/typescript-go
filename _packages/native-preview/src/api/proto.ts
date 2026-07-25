@@ -41,6 +41,21 @@ export interface TextEdit {
     newText: string;
 }
 
+/** Formatter settings. Unset fields fall back to the server's defaults. */
+export interface FormattingOptions {
+    tabSize?: number;
+    insertSpaces?: boolean;
+    trimTrailingWhitespace?: boolean;
+}
+
+/**
+ * Which import transformations {@link Project.organizeImports} applies.
+ * - `"all"` sorts, combines, and removes unused imports.
+ * - `"sortAndCombine"` sorts and combines, keeping unused imports.
+ * - `"removeUnused"` only removes unused imports.
+ */
+export type OrganizeImportsMode = "all" | "sortAndCombine" | "removeUnused";
+
 export interface ImportSymbolActionRequest {
     kind: "importSymbol";
     symbol: number;

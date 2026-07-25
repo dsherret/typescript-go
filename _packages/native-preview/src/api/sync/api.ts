@@ -61,6 +61,8 @@ import type {
     DocumentPosition,
     ImportAdderActionRequest,
     ImportSymbolActionRequest,
+    FormattingOptions,
+    OrganizeImportsMode,
     IndexInfoResponse,
     InitializeResponse,
     LSPUpdateSnapshotParams,
@@ -757,6 +759,44 @@ export class Project {
                 };
             }),
         );
+    }
+
+    /** Returns the edits that format an entire file. */
+    formatDocument(file: DocumentIdentifier, options?: FormattingOptions): readonly TextEdit[] {
+        const data = this.client.apiRequest<TextEdit[]>("formatDocument", {
+            snapshot: this.snapshotId,
+            project: this.id,
+            file,
+            ...(options !== undefined ? { options } : {}),
+        });
+        return data ?? [];
+    }
+
+    /** Returns the edits that format the `[pos, end)` span of a file. */
+    formatDocumentRange(file: DocumentIdentifier, pos: number, end: number, options?: FormattingOptions): readonly TextEdit[] {
+        const data = this.client.apiRequest<TextEdit[]>("formatDocumentRange", {
+            snapshot: this.snapshotId,
+            project: this.id,
+            file,
+            pos,
+            end,
+            ...(options !== undefined ? { options } : {}),
+        });
+        return data ?? [];
+    }
+
+    /**
+     * Returns the edits that sort, combine, and/or remove unused imports in a
+     * file. Defaults to all three; see {@link OrganizeImportsMode}.
+     */
+    organizeImports(file: DocumentIdentifier, mode?: OrganizeImportsMode): readonly TextEdit[] {
+        const data = this.client.apiRequest<TextEdit[]>("organizeImports", {
+            snapshot: this.snapshotId,
+            project: this.id,
+            file,
+            ...(mode !== undefined ? { mode } : {}),
+        });
+        return data ?? [];
     }
 
     dispose(): void {

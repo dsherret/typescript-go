@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"runtime/debug"
 
 	"github.com/microsoft/typescript-go/internal/json"
 	"github.com/microsoft/typescript-go/internal/lsp/lsproto"
@@ -80,6 +82,17 @@ func NewInProcessServer(ctx context.Context, options *InProcessServerOptions) *I
 // encoded node data); otherwise it is JSON. Filesystem callbacks made while
 // handling the request are routed through the configured Conn.
 func (s *InProcessServer) HandleRequest(ctx context.Context, method string, params json.Value) (response []byte, isBinary bool, err error) {
+	// Recover panics and report them as errors. Without this a panic in a
+	// handler aborts the whole runtime, which for the WebAssembly build means
+	// the module is permanently unusable rather than just failing one request.
+	defer func() {
+		if r := recover(); r != nil {
+			response = nil
+			isBinary = false
+			err = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
+		}
+	}()
+
 	result, err := s.session.HandleRequest(ctx, method, params)
 	if err != nil {
 		return nil, false, err
