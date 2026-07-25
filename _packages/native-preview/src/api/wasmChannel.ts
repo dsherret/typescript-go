@@ -22,9 +22,17 @@ export interface RpcChannel {
     close(): void;
 }
 
+/**
+ * The subset of a WebAssembly memory this channel uses. Declared structurally
+ * so the package does not need the DOM library for its types.
+ */
+export interface WasmMemory {
+    buffer: ArrayBuffer;
+}
+
 /** The exports of the tsgo-wasm reactor module. */
 export interface WasmExports {
-    memory: WebAssembly.Memory;
+    memory: WasmMemory;
     create_session(cwdPtr: number, cwdLen: number): void;
     get_request_buffer(size: number): number;
     handle_request(methodLen: number, payloadLen: number): number;

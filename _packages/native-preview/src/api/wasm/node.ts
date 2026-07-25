@@ -18,12 +18,21 @@ import { type WasmExports, WasmChannel } from "../wasmChannel.ts";
 /** Default location of the built reactor module within the package. */
 const defaultWasmPath = fileURLToPath(new URL("../../../dist/typescript.wasm", import.meta.url));
 
+/**
+ * The WebAssembly globals this module uses, declared locally so the package does
+ * not need the DOM library for its types.
+ */
+declare const WebAssembly: {
+    Module: new(bytes: Uint8Array | ArrayBuffer) => object;
+    Instance: new(module: object, imports: Record<string, unknown>) => { exports: unknown; };
+};
+
 export interface NodeWasmApiOptions {
     /**
      * The reactor module: a path to the `.wasm` file, or its bytes. Defaults to
      * the module bundled in this package's `dist/`.
      */
-    wasm?: string | BufferSource;
+    wasm?: string | Uint8Array | ArrayBuffer;
     /** Current working directory used for module resolution. Defaults to "/". */
     cwd?: string;
     /** Virtual filesystem callbacks. */
