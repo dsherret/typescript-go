@@ -761,6 +761,8 @@ func (s *Session) HandleRequest(ctx context.Context, method string, params json.
 		return s.handleGetDefinition(ctx, parsed.(*FilePositionParams))
 	case string(MethodGetImplementations):
 		return s.handleGetImplementations(ctx, parsed.(*FilePositionParams))
+	case string(MethodGetCodeFixes):
+		return s.handleGetCodeFixes(ctx, parsed.(*GetCodeFixesParams))
 	case string(MethodGetConstantValue):
 		return s.handleGetConstantValue(ctx, parsed.(*CheckerNodeParams))
 	case string(MethodGetSignatureFromDeclaration):

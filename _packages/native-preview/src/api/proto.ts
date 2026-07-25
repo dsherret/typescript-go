@@ -47,6 +47,12 @@ export interface FileTextEdits {
     edits: TextEdit[];
 }
 
+/** A quick fix: a description plus the edits that apply it. */
+export interface CodeFixAction {
+    description: string;
+    changes: FileTextEdits[];
+}
+
 /** A span of a file, in character offsets. */
 export interface FileSpan {
     fileName: string;

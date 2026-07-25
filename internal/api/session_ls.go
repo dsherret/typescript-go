@@ -11,6 +11,7 @@ import (
 	"github.com/microsoft/typescript-go/internal/core"
 	"github.com/microsoft/typescript-go/internal/ls"
 	"github.com/microsoft/typescript-go/internal/lsp/lsproto"
+	"github.com/microsoft/typescript-go/internal/project"
 )
 
 // Language service handlers.
@@ -23,7 +24,7 @@ import (
 
 // handleFormatDocument returns the edits that format an entire file.
 func (s *Session) handleFormatDocument(ctx context.Context, params *FormatDocumentParams) ([]*TextEdit, error) {
-	setup, err := s.setupLanguageServiceForFile(ctx, params.Snapshot, params.Project, params.File)
+	setup, err := s.setupLanguageServiceForFile(ctx, params.Snapshot, params.Project, params.File, false)
 	if err != nil {
 		return nil, err
 	}
@@ -38,13 +39,13 @@ func (s *Session) handleFormatDocument(ctx context.Context, params *FormatDocume
 
 // handleFormatDocumentRange returns the edits that format a span of a file.
 func (s *Session) handleFormatDocumentRange(ctx context.Context, params *FormatDocumentRangeParams) ([]*TextEdit, error) {
-	setup, err := s.setupLanguageServiceForFile(ctx, params.Snapshot, params.Project, params.File)
+	setup, err := s.setupLanguageServiceForFile(ctx, params.Snapshot, params.Project, params.File, false)
 	if err != nil {
 		return nil, err
 	}
 	defer setup.done()
 
-	converters := setup.sd.snapshot.Converters()
+	converters := setup.snapshot.Converters()
 	positionMap := setup.sourceFile.GetPositionMap()
 	lspRange := converters.ToLSPRange(setup.sourceFile, core.NewTextRange(
 		positionMap.UTF16ToUTF8(params.Pos),
@@ -61,7 +62,7 @@ func (s *Session) handleFormatDocumentRange(ctx context.Context, params *FormatD
 // handleOrganizeImports returns the edits that sort, combine, and/or remove
 // unused imports in a file, according to the requested mode.
 func (s *Session) handleOrganizeImports(ctx context.Context, params *OrganizeImportsParams) ([]*TextEdit, error) {
-	setup, err := s.setupLanguageServiceForFile(ctx, params.Snapshot, params.Project, params.File)
+	setup, err := s.setupLanguageServiceForFile(ctx, params.Snapshot, params.Project, params.File, false)
 	if err != nil {
 		return nil, err
 	}
@@ -80,19 +81,19 @@ func (s *Session) handleOrganizeImports(ctx context.Context, params *OrganizeImp
 	}
 
 	editsByFile := setup.langSvc.OrganizeImports(ctx, setup.sourceFile, setup.program, kind)
-	return toAPITextEdits(setup.sourceFile, setup.sd.snapshot.Converters(), editsByFile[setup.sourceFile.FileName()]), nil
+	return toAPITextEdits(setup.sourceFile, setup.snapshot.Converters(), editsByFile[setup.sourceFile.FileName()]), nil
 }
 
 // handleRename returns the edits that rename the symbol at a position, grouped
 // by file. An empty result means the element cannot be renamed.
 func (s *Session) handleRename(ctx context.Context, params *RenameParams) ([]*FileTextEdits, error) {
-	setup, err := s.setupLanguageServiceForFile(ctx, params.Snapshot, params.Project, params.File)
+	setup, err := s.setupLanguageServiceForFile(ctx, params.Snapshot, params.Project, params.File, false)
 	if err != nil {
 		return nil, err
 	}
 	defer setup.done()
 
-	converters := setup.sd.snapshot.Converters()
+	converters := setup.snapshot.Converters()
 
 	// A nil orchestrator selects the single-project path: renames are resolved
 	// against this project's program only, which is the API's model.
@@ -129,7 +130,7 @@ func (s *Session) handleRename(ctx context.Context, params *RenameParams) ([]*Fi
 
 // handleGetDefinition returns the locations that define the symbol at a position.
 func (s *Session) handleGetDefinition(ctx context.Context, params *FilePositionParams) ([]*FileSpan, error) {
-	setup, err := s.setupLanguageServiceForFile(ctx, params.Snapshot, params.Project, params.File)
+	setup, err := s.setupLanguageServiceForFile(ctx, params.Snapshot, params.Project, params.File, false)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +146,7 @@ func (s *Session) handleGetDefinition(ctx context.Context, params *FilePositionP
 // handleGetImplementations returns the locations that implement the symbol at a
 // position.
 func (s *Session) handleGetImplementations(ctx context.Context, params *FilePositionParams) ([]*FileSpan, error) {
-	setup, err := s.setupLanguageServiceForFile(ctx, params.Snapshot, params.Project, params.File)
+	setup, err := s.setupLanguageServiceForFile(ctx, params.Snapshot, params.Project, params.File, false)
 	if err != nil {
 		return nil, err
 	}
@@ -162,10 +163,105 @@ func (s *Session) handleGetImplementations(ctx context.Context, params *FilePosi
 	return setup.toAPIFileSpans(response), nil
 }
 
+// handleGetCodeFixes returns the quick fixes available for a span of a file.
+//
+// The LSP model derives fixes from diagnostics the client already holds, while
+// API clients ask by error code, so the diagnostics are computed here, filtered
+// to the requested span (and error codes, when given), and handed back as the
+// code action context.
+func (s *Session) handleGetCodeFixes(ctx context.Context, params *GetCodeFixesParams) ([]*CodeFixAction, error) {
+	setup, err := s.setupLanguageServiceForFile(ctx, params.Snapshot, params.Project, params.File, true)
+	if err != nil {
+		return nil, err
+	}
+	defer setup.done()
+
+	diagnosticsResponse, err := setup.langSvc.ProvideDiagnostics(ctx, setup.documentURI)
+	if err != nil {
+		return nil, err
+	}
+	if diagnosticsResponse.FullDocumentDiagnosticReport == nil {
+		return []*CodeFixAction{}, nil
+	}
+
+	start, end := params.Pos, params.End
+	if end < start {
+		start, end = end, start
+	}
+	converters := setup.snapshot.Converters()
+	positionMap := setup.sourceFile.GetPositionMap()
+
+	var relevant []*lsproto.Diagnostic
+	for _, diagnostic := range diagnosticsResponse.FullDocumentDiagnosticReport.Items {
+		if diagnostic == nil {
+			continue
+		}
+		if len(params.ErrorCodes) > 0 {
+			if diagnostic.Code == nil || diagnostic.Code.Integer == nil ||
+				!slices.Contains(params.ErrorCodes, int(*diagnostic.Code.Integer)) {
+				continue
+			}
+		}
+		diagStart := positionMap.UTF8ToUTF16(int(converters.LineAndCharacterToPosition(setup.sourceFile, diagnostic.Range.Start)))
+		diagEnd := positionMap.UTF8ToUTF16(int(converters.LineAndCharacterToPosition(setup.sourceFile, diagnostic.Range.End)))
+		if diagEnd < start || diagStart > end {
+			continue
+		}
+		relevant = append(relevant, diagnostic)
+	}
+	if len(relevant) == 0 {
+		return []*CodeFixAction{}, nil
+	}
+
+	only := []lsproto.CodeActionKind{lsproto.CodeActionKindQuickFix}
+	response, err := setup.langSvc.ProvideCodeActions(ctx, &lsproto.CodeActionParams{
+		TextDocument: lsproto.TextDocumentIdentifier{Uri: setup.documentURI},
+		Range: converters.ToLSPRange(setup.sourceFile, core.NewTextRange(
+			positionMap.UTF16ToUTF8(start),
+			positionMap.UTF16ToUTF8(end),
+		)),
+		Context: &lsproto.CodeActionContext{Diagnostics: relevant, Only: &only},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if response.CommandOrCodeActionArray == nil {
+		return []*CodeFixAction{}, nil
+	}
+
+	result := make([]*CodeFixAction, 0, len(*response.CommandOrCodeActionArray))
+	for _, entry := range *response.CommandOrCodeActionArray {
+		action := entry.CodeAction
+		if action == nil || action.Edit == nil || action.Edit.Changes == nil {
+			continue
+		}
+		fix := &CodeFixAction{Description: action.Title}
+		for uri, edits := range *action.Edit.Changes {
+			fileName := uri.FileName()
+			sourceFile := setup.program.GetSourceFile(fileName)
+			if sourceFile == nil {
+				continue
+			}
+			fix.Changes = append(fix.Changes, &FileTextEdits{
+				FileName: fileName,
+				Edits:    toAPITextEdits(sourceFile, converters, edits),
+			})
+		}
+		slices.SortFunc(fix.Changes, func(a, b *FileTextEdits) int {
+			return strings.Compare(a.FileName, b.FileName)
+		})
+		if len(fix.Changes) > 0 {
+			result = append(result, fix)
+		}
+	}
+	return result, nil
+}
+
 // languageServiceSetup bundles the state a language service handler needs: the
 // resolved snapshot/program/file plus the service itself.
 type languageServiceSetup struct {
 	sd          *snapshotData
+	snapshot    *project.Snapshot
 	program     *compiler.Program
 	sourceFile  *ast.SourceFile
 	langSvc     *ls.LanguageService
@@ -175,7 +271,11 @@ type languageServiceSetup struct {
 
 // setupLanguageServiceForFile resolves a snapshot, project, and file, and builds
 // a language service scoped to that file.
-func (s *Session) setupLanguageServiceForFile(ctx context.Context, snapshot SnapshotID, project ProjectID, file DocumentIdentifier) (*languageServiceSetup, error) {
+//
+// Fixes that add imports need the snapshot's auto-import registry prepared for
+// the file; autoImports requests that, at the cost of building the registry.
+// Callers must call done() to release the prepared snapshot.
+func (s *Session) setupLanguageServiceForFile(ctx context.Context, snapshot SnapshotID, project ProjectID, file DocumentIdentifier, autoImports bool) (*languageServiceSetup, error) {
 	sd, err := s.getSnapshotData(snapshot)
 	if err != nil {
 		return nil, err
@@ -189,23 +289,57 @@ func (s *Session) setupLanguageServiceForFile(ctx context.Context, snapshot Snap
 	if sourceFile == nil {
 		return nil, fmt.Errorf("%w: source file not found: %v", ErrClientError, file)
 	}
-	langSvc, err := s.setupLanguageService(sd, program, project, fileName)
-	if err != nil {
-		return nil, err
+
+	documentURI := file.ToURI(s.projectSession.GetCurrentDirectory())
+	projectPath := parseProjectHandle(project)
+	workingSnapshot := sd.snapshot
+	done := func() {}
+
+	if autoImports {
+		if registry := workingSnapshot.AutoImportRegistry(); registry == nil ||
+			!registry.IsPreparedForImportingFile(sourceFile.FileName(), projectPath, workingSnapshot.UserPreferences()) {
+			prepared := s.projectSession.GetSnapshotWithAutoImports(ctx, workingSnapshot, documentURI)
+			done = func() { prepared.Deref(s.projectSession) }
+			workingSnapshot = prepared
+
+			proj := workingSnapshot.ProjectCollection.GetProjectByPath(projectPath)
+			if proj == nil {
+				done()
+				return nil, fmt.Errorf("%w: project %s not found", ErrClientError, projectPath)
+			}
+			program = proj.GetProgram()
+			if program == nil {
+				done()
+				return nil, fmt.Errorf("%w: project has no program", ErrClientError)
+			}
+			sourceFile = program.GetSourceFile(fileName)
+			if sourceFile == nil {
+				done()
+				return nil, fmt.Errorf("%w: source file not found: %v", ErrClientError, file)
+			}
+		}
 	}
+
+	proj := workingSnapshot.ProjectCollection.GetProjectByPath(projectPath)
+	if proj == nil {
+		done()
+		return nil, fmt.Errorf("%w: project %s not found", ErrClientError, projectPath)
+	}
+
 	return &languageServiceSetup{
 		sd:          sd,
+		snapshot:    workingSnapshot,
 		program:     program,
 		sourceFile:  sourceFile,
-		langSvc:     langSvc,
-		documentURI: file.ToURI(s.projectSession.GetCurrentDirectory()),
-		done:        func() {},
+		langSvc:     ls.NewLanguageService(proj.ID(), program, workingSnapshot, fileName),
+		documentURI: documentURI,
+		done:        done,
 	}, nil
 }
 
 // toLSPPosition converts a character offset in the setup's file to an LSP position.
 func (setup *languageServiceSetup) toLSPPosition(position int) lsproto.Position {
-	return setup.sd.snapshot.Converters().PositionToLineAndCharacter(
+	return setup.snapshot.Converters().PositionToLineAndCharacter(
 		setup.sourceFile,
 		core.TextPos(setup.sourceFile.GetPositionMap().UTF16ToUTF8(position)),
 	)
@@ -230,7 +364,7 @@ func (setup *languageServiceSetup) toAPIFileSpans(response lsproto.LocationOrLoc
 		}
 	}
 
-	converters := setup.sd.snapshot.Converters()
+	converters := setup.snapshot.Converters()
 	result := make([]*FileSpan, 0, len(locations))
 	for _, location := range locations {
 		fileName := location.Uri.FileName()
@@ -253,7 +387,7 @@ func (s *Session) toAPIEditsFromResponse(setup *languageServiceSetup, response l
 	if response.TextEdits == nil {
 		return []*TextEdit{}
 	}
-	return toAPITextEdits(setup.sourceFile, setup.sd.snapshot.Converters(), *response.TextEdits)
+	return toAPITextEdits(setup.sourceFile, setup.snapshot.Converters(), *response.TextEdits)
 }
 
 // toLSPFormattingOptions converts the API's formatting options into the LSP

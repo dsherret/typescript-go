@@ -53,6 +53,7 @@ import type {
     DocumentPosition,
     ImportAdderActionRequest,
     ImportSymbolActionRequest,
+    CodeFixAction,
     FileSpan,
     FileTextEdits,
     FormattingOptions,
@@ -826,6 +827,22 @@ export class Project {
             project: this.id,
             file,
             position,
+        });
+        return data ?? [];
+    }
+
+    /**
+     * Returns the quick fixes available for the `[pos, end)` span. When
+     * `errorCodes` is given, only fixes addressing those diagnostics are returned.
+     */
+    async getCodeFixes(file: DocumentIdentifier, pos: number, end: number, errorCodes?: readonly number[]): Promise<readonly CodeFixAction[]> {
+        const data = await this.client.apiRequest<CodeFixAction[]>("getCodeFixes", {
+            snapshot: this.snapshotId,
+            project: this.id,
+            file,
+            pos,
+            end,
+            ...(errorCodes !== undefined ? { errorCodes } : {}),
         });
         return data ?? [];
     }

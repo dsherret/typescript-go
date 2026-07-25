@@ -160,6 +160,7 @@ const (
 	MethodRename                            Method = "rename"
 	MethodGetDefinition                     Method = "getDefinition"
 	MethodGetImplementations                Method = "getImplementations"
+	MethodGetCodeFixes                      Method = "getCodeFixes"
 	MethodGetTrueTypeOfConditionalType      Method = "getTrueTypeOfConditionalType"
 	MethodGetFalseTypeOfConditionalType     Method = "getFalseTypeOfConditionalType"
 	MethodGetConstantValue                  Method = "getConstantValue"
@@ -481,6 +482,7 @@ var unmarshalers = map[Method]func([]byte) (any, error){
 	MethodRename:                            unmarshallerFor[RenameParams],
 	MethodGetDefinition:                     unmarshallerFor[FilePositionParams],
 	MethodGetImplementations:                unmarshallerFor[FilePositionParams],
+	MethodGetCodeFixes:                      unmarshallerFor[GetCodeFixesParams],
 	MethodGetConstantValue:                  unmarshallerFor[CheckerNodeParams],
 	MethodGetSignatureFromDeclaration:       unmarshallerFor[CheckerNodeParams],
 	MethodGetExportSpecifierLocalTarget:     unmarshallerFor[CheckerNodeParams],
@@ -1172,6 +1174,24 @@ type FilePositionParams struct {
 	Project  ProjectID          `json:"project"`
 	File     DocumentIdentifier `json:"file"`
 	Position int                `json:"position"`
+}
+
+// CodeFixAction is a quick fix: a description plus the edits that apply it.
+type CodeFixAction struct {
+	Description string           `json:"description"`
+	Changes     []*FileTextEdits `json:"changes"`
+}
+
+// GetCodeFixesParams are the parameters for the getCodeFixes method. Pos and End
+// are character offsets; ErrorCodes, when non-empty, restricts the fixes to
+// those addressing the given diagnostic codes.
+type GetCodeFixesParams struct {
+	Snapshot   SnapshotID         `json:"snapshot"`
+	Project    ProjectID          `json:"project"`
+	File       DocumentIdentifier `json:"file"`
+	Pos        int                `json:"pos"`
+	End        int                `json:"end"`
+	ErrorCodes []int              `json:"errorCodes,omitempty"`
 }
 
 // RenameParams are the parameters for the rename method. Position is a
