@@ -284,6 +284,28 @@ func (r *Resolver) ResolveModuleName(moduleName string, containingFile string, r
 		}
 	}
 
+	// The host resolves first if it wants to. Asked before the compiler does any
+	// work, because a host that rewrites a specifier is describing where the file
+	// is, not correcting where the compiler looked. The answer is cached under the
+	// same key as any other, so the host is asked once per specifier per directory.
+	if hook, ok := r.host.(ModuleNameResolutionHook); ok {
+		if answer, handled := hook.ResolveModuleNameFromHost(moduleName, containingFile, resolutionMode); handled {
+			if traceBuilder != nil {
+				traceBuilder.write(diagnostics.Resolving_module_0_from_1, moduleName, containingFile)
+			}
+			// A rewritten specifier is resolved from here on as if it had been
+			// written that way. The cache stays keyed on what the file actually
+			// says, so the host is asked once per specifier per directory.
+			if answer != nil && answer.ModuleName != "" {
+				moduleName = answer.ModuleName
+			} else {
+				resolved := answer.GetResolved()
+				r.moduleResolutionCache.Set(cacheKey, resolved)
+				return resolved, traceBuilder.getTraces()
+			}
+		}
+	}
+
 	compilerOptions := GetCompilerOptionsWithRedirect(r.compilerOptions, redirectedReference)
 	if traceBuilder != nil {
 		traceBuilder.write(diagnostics.Resolving_module_0_from_1, moduleName, containingFile)

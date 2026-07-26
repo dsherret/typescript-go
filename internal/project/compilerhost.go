@@ -3,8 +3,10 @@ package project
 import (
 	"github.com/microsoft/typescript-go/internal/ast"
 	"github.com/microsoft/typescript-go/internal/compiler"
+	"github.com/microsoft/typescript-go/internal/core"
 	"github.com/microsoft/typescript-go/internal/diagnostics"
 	"github.com/microsoft/typescript-go/internal/locale"
+	"github.com/microsoft/typescript-go/internal/module"
 	"github.com/microsoft/typescript-go/internal/project/logging"
 	"github.com/microsoft/typescript-go/internal/tsoptions"
 	"github.com/microsoft/typescript-go/internal/tspath"
@@ -78,6 +80,20 @@ func (c *compilerHost) FS() vfs.FS {
 // GetCurrentDirectory implements compiler.CompilerHost.
 func (c *compilerHost) GetCurrentDirectory() string {
 	return c.currentDirectory
+}
+
+// ResolveModuleNameFromHost implements module.ModuleNameResolutionHook, passing
+// the question to whatever the session was opened with. A session with no
+// resolver never handles one, which is the same as not implementing this at all.
+func (c *compilerHost) ResolveModuleNameFromHost(
+	moduleName string,
+	containingFile string,
+	resolutionMode core.ResolutionMode,
+) (*module.HostModuleResolution, bool) {
+	if c.sessionOptions.ResolveModuleName == nil {
+		return nil, false
+	}
+	return c.sessionOptions.ResolveModuleName(moduleName, containingFile, resolutionMode)
 }
 
 // GetResolvedProjectReference implements compiler.CompilerHost.

@@ -7,6 +7,8 @@ import {
     type ClientWasmOptions,
     isSpawnOptions,
     isWasmOptions,
+    type ModuleNameResolutionRequest,
+    type ModuleNameResolver,
     resolveExePath,
 } from "../options.ts";
 import { SyncRpcChannel } from "../syncChannel.ts";
@@ -35,6 +37,7 @@ export class Client {
                 this.timing = new TimingCollector();
             }
             this.registerFsCallbacks(options.channel, options.fs);
+            this.registerModuleNameResolver(options.channel, options.resolveModuleName);
             return;
         }
 
@@ -58,8 +61,12 @@ export class Client {
                 }
             }
         }
-        if (enabledCallbacks.length > 0) {
-            args.push(`--callbacks=${enabledCallbacks.join(",")}`);
+        const callbackNames: string[] = [...enabledCallbacks];
+        if (options.resolveModuleName) {
+            callbackNames.push("resolveModuleName");
+        }
+        if (callbackNames.length > 0) {
+            args.push(`--callbacks=${callbackNames.join(",")}`);
         }
 
         const collectTiming = options.collectTiming ?? false;
@@ -72,6 +79,21 @@ export class Client {
         this.channel = channel;
 
         this.registerFsCallbacks(channel, options.fs);
+        this.registerModuleNameResolver(channel, options.resolveModuleName);
+    }
+
+    /**
+     * Wires the module resolver onto the channel.
+     *
+     * An empty answer on the wire means the host declined, which the compiler
+     * reads as "resolve this one yourself".
+     */
+    private registerModuleNameResolver(channel: RpcChannel, resolve: ModuleNameResolver | undefined): void {
+        if (!resolve) return;
+        channel.registerCallback("resolveModuleName", (_, arg) => {
+            const answer = resolve(JSON.parse(arg) as ModuleNameResolutionRequest);
+            return answer === undefined ? "" : JSON.stringify(answer);
+        });
     }
 
     /**

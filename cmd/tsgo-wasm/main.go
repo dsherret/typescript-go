@@ -103,6 +103,10 @@ type sessionOptions struct {
 	// case-sensitive default; a host backed by a Windows or macOS disk says false
 	// so the compiler resolves modules the way that disk does.
 	UseCaseSensitiveFileNames *bool `json:"useCaseSensitiveFileNames"`
+	// ResolveModuleName says the host answers module resolutions itself. Off by
+	// default: with it on the compiler asks the host about every specifier, and a
+	// host that did not mean to offer that would pay a callback per import.
+	ResolveModuleName bool `json:"resolveModuleName"`
 }
 
 // create_session builds the API session from the JSON options in the request
@@ -140,12 +144,16 @@ func createSession(cwdPtr, cwdLen uint32) (status uint32) {
 		defaultLibraryPath = bundled.LibPath()
 	}
 	useCaseSensitiveFileNames := options.UseCaseSensitiveFileNames == nil || *options.UseCaseSensitiveFileNames
+	callbacks := allFSCallbacks
+	if options.ResolveModuleName {
+		callbacks = append(append([]string{}, allFSCallbacks...), "resolveModuleName")
+	}
 	base := bundled.WrapFS(vfstest.FromMap(map[string]string{}, useCaseSensitiveFileNames))
 	server = api.NewInProcessServer(ctx, &api.InProcessServerOptions{
 		FS:                 base,
 		Cwd:                options.Cwd,
 		DefaultLibraryPath: defaultLibraryPath,
-		Callbacks:          allFSCallbacks,
+		Callbacks:          callbacks,
 		Conn:               wasmConn{},
 	})
 	setResponse(nil, false)

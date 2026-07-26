@@ -23,6 +23,7 @@ import (
 	"github.com/microsoft/typescript-go/internal/ls/lsconv"
 	"github.com/microsoft/typescript-go/internal/ls/lsutil"
 	"github.com/microsoft/typescript-go/internal/lsp/lsproto"
+	"github.com/microsoft/typescript-go/internal/module"
 	"github.com/microsoft/typescript-go/internal/project/ata"
 	"github.com/microsoft/typescript-go/internal/project/background"
 	"github.com/microsoft/typescript-go/internal/project/logging"
@@ -68,6 +69,10 @@ type SessionOptions struct {
 	// their file list and may put a file of any extension in it; a host that drives
 	// a configured project the same way needs the same allowance.
 	AllowNonTsExtensions bool
+	// ResolveModuleName lets the host resolve a module specifier itself. It is
+	// asked before the compiler resolves, and a `handled` of false means the host
+	// has no opinion about this specifier. Nil when the host does not resolve.
+	ResolveModuleName func(moduleName string, containingFile string, resolutionMode core.ResolutionMode) (answer *module.HostModuleResolution, handled bool)
 }
 
 type SessionInit struct {

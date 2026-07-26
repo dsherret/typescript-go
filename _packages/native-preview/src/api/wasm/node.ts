@@ -11,7 +11,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { WASI } from "node:wasi";
 import type { FileSystem } from "../fs.ts";
-import type { APIOptions } from "../options.ts";
+import type { APIOptions, ModuleNameResolver } from "../options.ts";
 import { API } from "../sync/api.ts";
 import { type WasmExports, WasmChannel } from "../wasmChannel.ts";
 
@@ -54,6 +54,11 @@ export interface NodeWasmApiOptions {
     useCaseSensitiveFileNames?: boolean;
     /** Virtual filesystem callbacks. */
     fs?: FileSystem;
+    /**
+     * Resolves a module specifier in place of the compiler. See the option of
+     * the same name in ../options.ts for what an answer means.
+     */
+    resolveModuleName?: ModuleNameResolver;
     /** When true, collect per-request timing information. */
     collectTiming?: boolean;
 }
@@ -76,11 +81,13 @@ export function createWasmAPI(options: NodeWasmApiOptions = {}): API {
         cwd: options.cwd ?? "/",
         ...(options.defaultLibraryPath !== undefined ? { defaultLibraryPath: options.defaultLibraryPath } : {}),
         ...(options.useCaseSensitiveFileNames !== undefined ? { useCaseSensitiveFileNames: options.useCaseSensitiveFileNames } : {}),
+        ...(options.resolveModuleName !== undefined ? { resolveModuleName: true } : {}),
     });
 
     return new API({
         channel,
         fs: options.fs,
+        resolveModuleName: options.resolveModuleName,
         collectTiming: options.collectTiming,
     } as unknown as APIOptions);
 }

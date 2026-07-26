@@ -50,10 +50,22 @@ func NewInProcessServer(ctx context.Context, options *InProcessServerOptions) *I
 
 	fs := options.FS
 
+	// resolveModuleName is a callback but not a filesystem one, so it is taken out
+	// before the rest are handed to callbackFS.
+	fsCallbacks := make([]string, 0, len(options.Callbacks))
+	resolvesModuleNames := false
+	for _, callback := range options.Callbacks {
+		if callback == callbackResolveModuleName {
+			resolvesModuleNames = true
+			continue
+		}
+		fsCallbacks = append(fsCallbacks, callback)
+	}
+
 	// Wrap the base FS with callbackFS if callbacks are requested.
 	var callbackFS *callbackFS
-	if len(options.Callbacks) > 0 {
-		callbackFS = newCallbackFS(fs, options.Callbacks)
+	if len(fsCallbacks) > 0 {
+		callbackFS = newCallbackFS(fs, fsCallbacks)
 		fs = callbackFS
 	}
 
@@ -69,6 +81,7 @@ func NewInProcessServer(ctx context.Context, options *InProcessServerOptions) *I
 			// inferred project's, so a file it names is in the project whatever its
 			// extension — the same allowance NewInferredProject makes.
 			AllowNonTsExtensions: true,
+			ResolveModuleName:    newCallbackModuleResolver(ctx, options.Conn, resolvesModuleNames),
 		},
 	})
 
