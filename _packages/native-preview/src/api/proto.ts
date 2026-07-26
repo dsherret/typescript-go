@@ -54,6 +54,15 @@ export interface CodeFixAction {
     changes: FileTextEdits[];
 }
 
+/**
+ * The result of applying one fix id across a whole file: a description plus the
+ * edits that apply it everywhere it is needed.
+ */
+export interface CombinedCodeActions {
+    description: string;
+    changes: FileTextEdits[];
+}
+
 /** A span of a file, in character offsets. */
 export interface FileSpan {
     fileName: string;
@@ -66,6 +75,12 @@ export interface FormattingOptions {
     tabSize?: number;
     insertSpaces?: boolean;
     trimTrailingWhitespace?: boolean;
+    /** The indentation step. Defaults to `tabSize`. */
+    indentSize?: number;
+    /** How new lines are indented: 0 none, 1 block, 2 smart. */
+    indentStyle?: number;
+    /** The line ending inserted text is written with. */
+    newLineCharacter?: string;
 }
 
 /**

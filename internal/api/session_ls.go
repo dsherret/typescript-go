@@ -10,6 +10,7 @@ import (
 	"github.com/microsoft/typescript-go/internal/compiler"
 	"github.com/microsoft/typescript-go/internal/core"
 	"github.com/microsoft/typescript-go/internal/ls"
+	"github.com/microsoft/typescript-go/internal/ls/lsutil"
 	"github.com/microsoft/typescript-go/internal/lsp/lsproto"
 	"github.com/microsoft/typescript-go/internal/project"
 )
@@ -30,11 +31,8 @@ func (s *Session) handleFormatDocument(ctx context.Context, params *FormatDocume
 	}
 	defer setup.done()
 
-	response, err := setup.langSvc.ProvideFormatDocument(ctx, setup.documentURI, toLSPFormattingOptions(params.Options))
-	if err != nil {
-		return nil, err
-	}
-	return s.toAPIEditsFromResponse(setup, response), nil
+	edits := setup.langSvc.FormatDocumentWithSettings(ctx, setup.documentURI, toFormatCodeSettings(setup.langSvc.FormatOptions(), params.Options))
+	return toAPITextEdits(setup.sourceFile, setup.snapshot.Converters(), edits), nil
 }
 
 // handleFormatDocumentRange returns the edits that format a span of a file.
@@ -52,11 +50,8 @@ func (s *Session) handleFormatDocumentRange(ctx context.Context, params *FormatD
 		positionMap.UTF16ToUTF8(params.End),
 	))
 
-	response, err := setup.langSvc.ProvideFormatDocumentRange(ctx, setup.documentURI, toLSPFormattingOptions(params.Options), lspRange)
-	if err != nil {
-		return nil, err
-	}
-	return s.toAPIEditsFromResponse(setup, response), nil
+	edits := setup.langSvc.FormatDocumentRangeWithSettings(ctx, setup.documentURI, toFormatCodeSettings(setup.langSvc.FormatOptions(), params.Options), lspRange)
+	return toAPITextEdits(setup.sourceFile, setup.snapshot.Converters(), edits), nil
 }
 
 // handleOrganizeImports returns the edits that sort, combine, and/or remove
@@ -284,6 +279,48 @@ func (s *Session) handleGetCodeFixes(ctx context.Context, params *GetCodeFixesPa
 	return result, nil
 }
 
+// handleGetCombinedCodeFix returns the edits that apply one fix id across a
+// whole file, i.e. the "fix all" form of a quick fix.
+//
+// Unlike handleGetCodeFixes this does not go through the LSP code action shape:
+// the provider's combined result is already a plain edit list, and routing it
+// through lsproto.CodeAction would only lose the description.
+func (s *Session) handleGetCombinedCodeFix(ctx context.Context, params *GetCombinedCodeFixParams) (*CombinedCodeActions, error) {
+	setup, err := s.setupLanguageServiceForFile(ctx, params.Snapshot, params.Project, params.File, true)
+	if err != nil {
+		return nil, err
+	}
+	defer setup.done()
+
+	var formatOptions *lsutil.FormatCodeSettings
+	if params.Options != nil {
+		settings := toFormatCodeSettings(setup.langSvc.FormatOptions(), params.Options)
+		formatOptions = &settings
+	}
+
+	combined, known, err := setup.langSvc.GetCombinedCodeFix(ctx, setup.program, setup.sourceFile, params.FixId, formatOptions)
+	if err != nil {
+		return nil, err
+	}
+	if !known {
+		return nil, fmt.Errorf("%w: no code fix provider handles fix id %q", ErrClientError, params.FixId)
+	}
+
+	// A provider that owns the fix id but finds nothing to fix returns nil, which
+	// is an empty change set rather than an error.
+	result := &CombinedCodeActions{Changes: []*FileTextEdits{}}
+	if combined != nil {
+		result.Description = combined.Description
+	}
+	if combined != nil && len(combined.Changes) > 0 {
+		result.Changes = append(result.Changes, &FileTextEdits{
+			FileName: setup.sourceFile.FileName(),
+			Edits:    toAPITextEdits(setup.sourceFile, setup.snapshot.Converters(), combined.Changes),
+		})
+	}
+	return result, nil
+}
+
 // handleGetAmbientModules returns the symbols of the project's ambient module
 // declarations, i.e. every global whose name is a quoted module specifier.
 func (s *Session) handleGetAmbientModules(ctx context.Context, params *GetIntrinsicTypeParams) ([]*SymbolResponse, error) {
@@ -431,12 +468,26 @@ func (setup *languageServiceSetup) toAPIFileSpans(response lsproto.LocationOrLoc
 	return result
 }
 
-// toAPIEditsFromResponse converts an LSP formatting response into API edits.
-func (s *Session) toAPIEditsFromResponse(setup *languageServiceSetup, response lsproto.TextEditsOrNull) []*TextEdit {
-	if response.TextEdits == nil {
-		return []*TextEdit{}
+// toFormatCodeSettings resolves the API's formatting options against the server's
+// configured defaults. It goes through the LSP shape for the three fields that one
+// carries, then applies the indent size, indent style and newline character on top —
+// those the formatter reads but LSP has nowhere to put. IndentSize is applied last
+// because FromLSFormatOptions derives it from the tab size.
+func toFormatCodeSettings(base lsutil.FormatCodeSettings, options *FormattingOptions) lsutil.FormatCodeSettings {
+	settings := lsutil.FromLSFormatOptions(base, toLSPFormattingOptions(options))
+	if options == nil {
+		return settings
 	}
-	return toAPITextEdits(setup.sourceFile, setup.snapshot.Converters(), *response.TextEdits)
+	if options.IndentSize != nil {
+		settings.IndentSize = *options.IndentSize
+	}
+	if options.IndentStyle != nil {
+		settings.IndentStyle = lsutil.IndentStyle(*options.IndentStyle)
+	}
+	if options.NewLineCharacter != nil {
+		settings.NewLineCharacter = *options.NewLineCharacter
+	}
+	return settings
 }
 
 // toLSPFormattingOptions converts the API's formatting options into the LSP

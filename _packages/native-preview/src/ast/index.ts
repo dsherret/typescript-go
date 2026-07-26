@@ -11,6 +11,7 @@ export { SyntaxKind } from "#enums/syntaxKind";
 export { TokenFlags } from "#enums/tokenFlags";
 export * from "./ast.ts";
 export * from "./astnav.ts";
+export * from "./children.ts";
 export * from "./clone.ts";
 export * from "./is.ts";
 export * from "./jsdoc.ts";

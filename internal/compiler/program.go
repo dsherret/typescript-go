@@ -1608,6 +1608,9 @@ type WriteFileData struct {
 	Diagnostics     []*ast.Diagnostic
 	SkippedDtsWrite bool
 	SourceFile      *ast.SourceFile
+	// WriteByteOrderMark reports that the text handed to WriteFile starts with a
+	// UTF-8 byte order mark, which emitBOM asked for.
+	WriteByteOrderMark bool
 }
 
 type WriteFile func(fileName string, text string, data *WriteFileData) error

@@ -35,6 +35,7 @@ import {
 import { assertNever } from "../../internal/utils.ts";
 import {
     encodeNode,
+    rootedFileName,
     uint8ArrayToBase64,
 } from "../node/encoder.ts";
 import {
@@ -62,6 +63,7 @@ import type {
     ImportAdderActionRequest,
     ImportSymbolActionRequest,
     CodeFixAction,
+    CombinedCodeActions,
     FileSpan,
     FileTextEdits,
     FormattingOptions,
@@ -860,6 +862,21 @@ export class Project {
             ...(errorCodes !== undefined ? { errorCodes } : {}),
         });
         return data ?? [];
+    }
+
+    /**
+     * Returns the edits that apply `fixId` everywhere it is needed in the file,
+     * i.e. the "fix all" form of a quick fix. Throws when no provider owns the
+     * fix id.
+     */
+    getCombinedCodeFix(file: DocumentIdentifier, fixId: string, options?: FormattingOptions): CombinedCodeActions {
+        return this.client.apiRequest<CombinedCodeActions>("getCombinedCodeFix", {
+            snapshot: this.snapshotId,
+            project: this.id,
+            file,
+            fixId,
+            ...(options !== undefined ? { options } : {}),
+        });
     }
 
     dispose(): void {
@@ -1865,6 +1882,72 @@ export class Checker {
         });
     }
 
+    getJsDocTagsOfSignature(signature: Signature): readonly JSDocTagInfo[] {
+        const data = this.client.apiRequest<JSDocTagInfo[] | null>("getJsDocTagsOfSignature", {
+            snapshot: this.snapshotId,
+            project: this.project.id,
+            signature: signature.id,
+        });
+        return data ?? [];
+    }
+
+    getDocumentationCommentOfSignature(signature: Signature): string {
+        return this.client.apiRequest<string>("getDocumentationCommentOfSignature", {
+            snapshot: this.snapshotId,
+            project: this.project.id,
+            signature: signature.id,
+        });
+    }
+
+    /**
+     * Returns every symbol visible at the given location whose meaning matches the
+     * requested flags, walking outwards from the location to the globals.
+     */
+    getSymbolsInScope(location: Node, meaning: SymbolFlags): readonly Symbol[] {
+        const data = this.client.apiRequest<SymbolResponse[] | null>("getSymbolsInScope", {
+            snapshot: this.snapshotId,
+            project: this.project.id,
+            location: getNodeId(location),
+            meaning,
+        });
+        return data ? data.map(d => this.objectRegistry.getOrCreateSymbol(d)) : [];
+    }
+
+    /**
+     * Returns the symbols the binder placed in the node's own local scope, in declaration
+     * order. Nodes that do not hold locals return an empty array.
+     */
+    getLocals(node: Node): readonly Symbol[] {
+        const data = this.client.apiRequest<SymbolResponse[] | null>("getLocalsOfNode", {
+            snapshot: this.snapshotId,
+            project: this.project.id,
+            location: getNodeId(node),
+        });
+        return data ? data.map(d => this.objectRegistry.getOrCreateSymbol(d)) : [];
+    }
+
+    /**
+     * Returns the type a value of the given type resolves to when awaited, or undefined
+     * when the type cannot be awaited.
+     */
+    getAwaitedType(type: Type): Type | undefined {
+        const data = this.client.apiRequest<TypeResponse | null>("getAwaitedType", {
+            snapshot: this.snapshotId,
+            project: this.project.id,
+            type: type.id,
+        });
+        return data ? this.objectRegistry.getOrCreateType(data) : undefined;
+    }
+
+    /** Returns the symbol's name qualified by each of its parents. */
+    getFullyQualifiedName(symbol: Symbol): string {
+        return this.client.apiRequest<string>("getFullyQualifiedName", {
+            snapshot: this.snapshotId,
+            project: this.project.id,
+            symbol: symbol.id,
+        });
+    }
+
     /**
      * Get the type arguments of a type reference (e.g. the `string` in `Array<string>`).
      */
@@ -1890,6 +1973,14 @@ export interface PrintNodeOptions {
     preserveSourceNewlines?: boolean | undefined;
     neverAsciiEscape?: boolean | undefined;
     terminateUnterminatedLiterals?: boolean | undefined;
+    /** Whether the printer leaves the node's comments out. */
+    removeComments?: boolean | undefined;
+    /**
+     * The line break the printer writes, as a `NewLineKind`: 1 for CRLF, 2 for LF.
+     * Defaults to LF. Only the breaks the printer emits are affected, so a line
+     * break inside a template literal keeps whatever the source gave it.
+     */
+    newLine?: number | undefined;
 }
 
 export class Emitter {
@@ -1905,6 +1996,9 @@ export class Emitter {
         return this.client.apiRequest<string>("printNode", {
             data: base64,
             ...options,
+            // sourceText is reparsed under this name, and the parser wants an
+            // absolute, normalized one; only the script kind is read off it.
+            fileName: options.fileName === undefined ? undefined : rootedFileName(options.fileName),
         });
     }
 }
@@ -1982,6 +2076,7 @@ export class Symbol {
     private readonly exportSymbol!: number;
     private membersCache: ReadonlyMap<__String, Symbol> | undefined;
     private exportsCache: ReadonlyMap<__String, Symbol> | undefined;
+    private globalExportsCache: ReadonlyMap<__String, Symbol> | undefined;
 
     constructor(data: SymbolResponse, objectRegistry: SnapshotObjectRegistry) {
         this.objectRegistry = objectRegistry;
@@ -2021,6 +2116,14 @@ export class Symbol {
      */
     getExports(): ReadonlyMap<__String, Symbol> {
         return this.exportsCache ??= this.fetchSymbolTable("getExportsOfSymbol");
+    }
+
+    /**
+     * Get the UMD global exports this module symbol declares with `export as namespace X`,
+     * keyed by escaped name. The result is cached on the symbol.
+     */
+    getGlobalExports(): ReadonlyMap<__String, Symbol> {
+        return this.globalExportsCache ??= this.fetchSymbolTable("getGlobalExportsOfSymbol");
     }
 
     private fetchSymbolTable(method: string): ReadonlyMap<__String, Symbol> {
@@ -2557,5 +2660,13 @@ export class Signature {
 
     get isAbstract(): boolean {
         return (this.flags & SignatureFlags.Abstract) !== 0;
+    }
+
+    getJsDocTags(checker: Checker): readonly JSDocTagInfo[] {
+        return checker.getJsDocTagsOfSignature(this);
+    }
+
+    getDocumentationComment(checker: Checker): string {
+        return checker.getDocumentationCommentOfSignature(this);
     }
 }

@@ -638,6 +638,8 @@ func (s *Session) HandleRequest(ctx context.Context, method string, params json.
 		return s.handleGetExportsOfSymbol(ctx, parsed.(*GetSymbolPropertyParams))
 	case string(MethodGetExportSymbolOfSymbol):
 		return s.handleGetExportSymbolOfSymbol(ctx, parsed.(*GetSymbolPropertyParams))
+	case string(MethodGetGlobalExportsOfSymbol):
+		return s.handleGetGlobalExportsOfSymbol(ctx, parsed.(*GetSymbolPropertyParams))
 	case string(MethodGetSymbolOfType):
 		return s.handleGetSymbolOfType(ctx, parsed.(*GetTypePropertyParams))
 	case string(MethodGetTargetOfType):
@@ -764,6 +766,8 @@ func (s *Session) HandleRequest(ctx context.Context, method string, params json.
 		return s.handleGetImplementations(ctx, parsed.(*FilePositionParams))
 	case string(MethodGetCodeFixes):
 		return s.handleGetCodeFixes(ctx, parsed.(*GetCodeFixesParams))
+	case string(MethodGetCombinedCodeFix):
+		return s.handleGetCombinedCodeFix(ctx, parsed.(*GetCombinedCodeFixParams))
 	case string(MethodGetAmbientModules):
 		return s.handleGetAmbientModules(ctx, parsed.(*GetIntrinsicTypeParams))
 	case string(MethodGetConstantValue):
@@ -784,6 +788,18 @@ func (s *Session) HandleRequest(ctx context.Context, method string, params json.
 		return s.handleGetJSDocTags(ctx, parsed.(*CheckerSymbolParams))
 	case string(MethodGetDocumentationComment):
 		return s.handleGetDocumentationComment(ctx, parsed.(*CheckerSymbolParams))
+	case string(MethodGetJSDocTagsOfSignature):
+		return s.handleGetJSDocTagsOfSignature(ctx, parsed.(*CheckerSignatureParams))
+	case string(MethodGetDocumentationCommentOfSignature):
+		return s.handleGetDocumentationCommentOfSignature(ctx, parsed.(*CheckerSignatureParams))
+	case string(MethodGetSymbolsInScope):
+		return s.handleGetSymbolsInScope(ctx, parsed.(*GetSymbolsInScopeParams))
+	case string(MethodGetLocalsOfNode):
+		return s.handleGetLocalsOfNode(ctx, parsed.(*CheckerNodeParams))
+	case string(MethodGetAwaitedType):
+		return s.handleGetAwaitedType(ctx, parsed.(*CheckerTypeParams))
+	case string(MethodGetFullyQualifiedName):
+		return s.handleGetFullyQualifiedName(ctx, parsed.(*CheckerSymbolParams))
 	case string(MethodIsArrayType):
 		return s.handleIsArrayType(ctx, parsed.(*CheckerTypeParams))
 	case string(MethodIsTupleType):
@@ -1643,6 +1659,19 @@ func (s *Session) handleGetExportsOfSymbol(ctx context.Context, params *GetSymbo
 	})
 }
 
+// handleGetGlobalExportsOfSymbol returns the UMD global exports declared by a module symbol,
+// that is the names introduced by its `export as namespace X` declarations. tsgo keeps that
+// table on the source file rather than on the symbol, so it is reached through the symbol's
+// value declaration.
+func (s *Session) handleGetGlobalExportsOfSymbol(ctx context.Context, params *GetSymbolPropertyParams) ([]*SymbolResponse, error) {
+	return s.resolveSymbolTablePropertyOfSymbol(ctx, params, func(symbol *ast.Symbol) ast.SymbolTable {
+		if d := symbol.ValueDeclaration; d != nil && ast.IsSourceFile(d) {
+			return d.AsSourceFile().GlobalExports
+		}
+		return nil
+	})
+}
+
 func (s *Session) handleGetExportSymbolOfSymbol(_ context.Context, params *GetSymbolPropertyParams) (*SymbolResponse, error) {
 	return s.resolveSymbolPropertyOfSymbol(params, func(sym *ast.Symbol) *ast.Symbol { return sym.ExportSymbol })
 }
@@ -2381,6 +2410,8 @@ func (s *Session) handlePrintNode(_ context.Context, params *PrintNodeParams) (s
 		PreserveSourceNewlines:        params.PreserveSourceNewlines,
 		NeverAsciiEscape:              params.NeverAsciiEscape,
 		TerminateUnterminatedLiterals: params.TerminateUnterminatedLiterals,
+		RemoveComments:                params.RemoveComments,
+		NewLine:                       core.NewLineKind(params.NewLine),
 	}, printer.PrintHandlers{}, nil)
 	return p.Emit(node, parseSourceFileForPrinting(params)), nil
 }
@@ -2472,8 +2503,18 @@ func emitToOutput(ctx context.Context, program *compiler.Program, options compil
 			name := data.SourceFile.FileName()
 			sourceFileName = &name
 		}
+		// the emitter prepends the byte order mark to the text it writes; the two
+		// are reported separately here, the way ts.OutputFile did
+		if data.WriteByteOrderMark {
+			text = strings.TrimPrefix(text, "\xEF\xBB\xBF")
+		}
 		mu.Lock()
-		outputFiles = append(outputFiles, &EmitOutputFile{FileName: fileName, Text: text, SourceFileName: sourceFileName})
+		outputFiles = append(outputFiles, &EmitOutputFile{
+			FileName:           fileName,
+			Text:               text,
+			SourceFileName:     sourceFileName,
+			WriteByteOrderMark: data.WriteByteOrderMark,
+		})
 		mu.Unlock()
 		return nil
 	}
@@ -3116,6 +3157,155 @@ func (s *Session) handleGetDocumentationComment(ctx context.Context, params *Che
 	}
 
 	return langSvc.GetSymbolDocumentationComment(setup.checker, symbol), nil
+}
+
+// handleGetJSDocTagsOfSignature returns the JSDoc tags on a signature's declaration.
+func (s *Session) handleGetJSDocTagsOfSignature(ctx context.Context, params *CheckerSignatureParams) ([]*JSDocTagInfo, error) {
+	setup, err := s.setupChecker(ctx, params.Snapshot, params.Project)
+	if err != nil {
+		return nil, err
+	}
+	defer setup.done()
+
+	sig, err := setup.resolveSignatureHandle(params.Signature)
+	if err != nil {
+		return nil, err
+	}
+
+	langSvc, err := s.setupLanguageService(setup.sd, setup.program, params.Project, "")
+	if err != nil {
+		return nil, err
+	}
+
+	tags := langSvc.GetSignatureJSDocTags(sig.Declaration())
+	if len(tags) == 0 {
+		return nil, nil
+	}
+	results := make([]*JSDocTagInfo, len(tags))
+	for i, tag := range tags {
+		results[i] = &JSDocTagInfo{Name: tag.Name, Text: tag.Text}
+	}
+	return results, nil
+}
+
+// handleGetDocumentationCommentOfSignature returns the rendered documentation comment of a
+// signature's declaration as plain text.
+func (s *Session) handleGetDocumentationCommentOfSignature(ctx context.Context, params *CheckerSignatureParams) (string, error) {
+	setup, err := s.setupChecker(ctx, params.Snapshot, params.Project)
+	if err != nil {
+		return "", err
+	}
+	defer setup.done()
+
+	sig, err := setup.resolveSignatureHandle(params.Signature)
+	if err != nil {
+		return "", err
+	}
+
+	langSvc, err := s.setupLanguageService(setup.sd, setup.program, params.Project, "")
+	if err != nil {
+		return "", err
+	}
+
+	return langSvc.GetSignatureDocumentationComment(setup.checker, sig.Declaration()), nil
+}
+
+// handleGetSymbolsInScope returns every symbol visible at a location that matches the
+// requested meaning, walking outwards from the location to the globals.
+func (s *Session) handleGetSymbolsInScope(ctx context.Context, params *GetSymbolsInScopeParams) ([]*SymbolResponse, error) {
+	setup, err := s.setupChecker(ctx, params.Snapshot, params.Project)
+	if err != nil {
+		return nil, err
+	}
+	defer setup.done()
+
+	node, err := setup.sd.resolveNodeHandle(setup.program, params.Location)
+	if err != nil {
+		return nil, err
+	}
+
+	symbols := setup.checker.GetSymbolsInScope(node, ast.SymbolFlags(params.Meaning))
+	if len(symbols) == 0 {
+		return nil, nil
+	}
+	slices.SortFunc(symbols, setup.checker.CompareSymbols)
+
+	results := make([]*SymbolResponse, len(symbols))
+	for i, sym := range symbols {
+		results[i] = setup.newSymbolResponse(sym)
+	}
+	return results, nil
+}
+
+// handleGetLocalsOfNode returns the symbols the binder placed in a node's own local scope,
+// in declaration order. Nodes that do not hold locals return nothing.
+func (s *Session) handleGetLocalsOfNode(ctx context.Context, params *CheckerNodeParams) ([]*SymbolResponse, error) {
+	setup, err := s.setupChecker(ctx, params.Snapshot, params.Project)
+	if err != nil {
+		return nil, err
+	}
+	defer setup.done()
+
+	node, err := setup.sd.resolveNodeHandle(setup.program, params.Location)
+	if err != nil {
+		return nil, err
+	}
+	if !ast.IsLocalsContainer(node) {
+		return nil, nil
+	}
+
+	locals := node.Locals()
+	if len(locals) == 0 {
+		return nil, nil
+	}
+	symbols := make([]*ast.Symbol, 0, len(locals))
+	for _, sym := range locals {
+		symbols = append(symbols, sym)
+	}
+	// a SymbolTable is a plain map, so sort by the checker's ordering (first declaration
+	// position) to turn Go's randomized iteration into declaration order.
+	slices.SortFunc(symbols, setup.checker.CompareSymbols)
+
+	results := make([]*SymbolResponse, len(symbols))
+	for i, sym := range symbols {
+		results[i] = setup.newSymbolResponse(sym)
+	}
+	return results, nil
+}
+
+// handleGetAwaitedType returns the type a value of the given type resolves to when awaited.
+func (s *Session) handleGetAwaitedType(ctx context.Context, params *CheckerTypeParams) (*TypeResponse, error) {
+	setup, err := s.setupChecker(ctx, params.Snapshot, params.Project)
+	if err != nil {
+		return nil, err
+	}
+	defer setup.done()
+
+	t, err := setup.resolveTypeHandle(params.Type)
+	if err != nil {
+		return nil, err
+	}
+
+	return setup.newTypeResponse(setup.checker.GetAwaitedType(t)), nil
+}
+
+// handleGetFullyQualifiedName returns the symbol's name qualified by each of its parents.
+func (s *Session) handleGetFullyQualifiedName(ctx context.Context, params *CheckerSymbolParams) (string, error) {
+	setup, err := s.setupChecker(ctx, params.Snapshot, params.Project)
+	if err != nil {
+		return "", err
+	}
+	defer setup.done()
+
+	symbol, err := setup.resolveSymbolHandle(params.Symbol)
+	if err != nil {
+		return "", err
+	}
+	if symbol == nil {
+		return "", nil
+	}
+
+	return setup.checker.GetFullyQualifiedName(symbol), nil
 }
 
 // handleGetTypeArguments returns the type arguments of a type reference.

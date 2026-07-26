@@ -258,6 +258,7 @@ import type {
     YieldExpression,
 } from "./ast.ts";
 import { getTokenPosOfNode } from "./astnav.ts";
+import { getChildren } from "./children.ts";
 import { cloneSourceFileData } from "./utils.ts";
 import {
     forEachChildOfJSDocParameterTag,
@@ -668,6 +669,10 @@ export class NodeObject {
         let node: Node = this as unknown as Node;
         while (node.parent) node = node.parent;
         return node as unknown as SourceFile;
+    }
+
+    getChildren(sourceFile?: SourceFile): Node[] {
+        return getChildren(this as unknown as Node, sourceFile ?? this.getSourceFile());
     }
 
     getStart(sourceFile?: SourceFile, includeJsDocComment?: boolean): number {

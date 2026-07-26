@@ -27,6 +27,7 @@ import {
 import { assertNever } from "../../internal/utils.ts";
 import {
     encodeNode,
+    rootedFileName,
     uint8ArrayToBase64,
 } from "../node/encoder.ts";
 import {
@@ -54,6 +55,7 @@ import type {
     ImportAdderActionRequest,
     ImportSymbolActionRequest,
     CodeFixAction,
+    CombinedCodeActions,
     FileSpan,
     FileTextEdits,
     FormattingOptions,
@@ -845,6 +847,21 @@ export class Project {
             ...(errorCodes !== undefined ? { errorCodes } : {}),
         });
         return data ?? [];
+    }
+
+    /**
+     * Returns the edits that apply `fixId` everywhere it is needed in the file,
+     * i.e. the "fix all" form of a quick fix. Throws when no provider owns the
+     * fix id.
+     */
+    async getCombinedCodeFix(file: DocumentIdentifier, fixId: string, options?: FormattingOptions): Promise<CombinedCodeActions> {
+        return await this.client.apiRequest<CombinedCodeActions>("getCombinedCodeFix", {
+            snapshot: this.snapshotId,
+            project: this.id,
+            file,
+            fixId,
+            ...(options !== undefined ? { options } : {}),
+        });
     }
 
     dispose(): void {
@@ -1850,6 +1867,72 @@ export class Checker {
         });
     }
 
+    async getJsDocTagsOfSignature(signature: Signature): Promise<readonly JSDocTagInfo[]> {
+        const data = await this.client.apiRequest<JSDocTagInfo[] | null>("getJsDocTagsOfSignature", {
+            snapshot: this.snapshotId,
+            project: this.project.id,
+            signature: signature.id,
+        });
+        return data ?? [];
+    }
+
+    async getDocumentationCommentOfSignature(signature: Signature): Promise<string> {
+        return this.client.apiRequest<string>("getDocumentationCommentOfSignature", {
+            snapshot: this.snapshotId,
+            project: this.project.id,
+            signature: signature.id,
+        });
+    }
+
+    /**
+     * Returns every symbol visible at the given location whose meaning matches the
+     * requested flags, walking outwards from the location to the globals.
+     */
+    async getSymbolsInScope(location: Node, meaning: SymbolFlags): Promise<readonly Symbol[]> {
+        const data = await this.client.apiRequest<SymbolResponse[] | null>("getSymbolsInScope", {
+            snapshot: this.snapshotId,
+            project: this.project.id,
+            location: getNodeId(location),
+            meaning,
+        });
+        return data ? data.map(d => this.objectRegistry.getOrCreateSymbol(d)) : [];
+    }
+
+    /**
+     * Returns the symbols the binder placed in the node's own local scope, in declaration
+     * order. Nodes that do not hold locals return an empty array.
+     */
+    async getLocals(node: Node): Promise<readonly Symbol[]> {
+        const data = await this.client.apiRequest<SymbolResponse[] | null>("getLocalsOfNode", {
+            snapshot: this.snapshotId,
+            project: this.project.id,
+            location: getNodeId(node),
+        });
+        return data ? data.map(d => this.objectRegistry.getOrCreateSymbol(d)) : [];
+    }
+
+    /**
+     * Returns the type a value of the given type resolves to when awaited, or undefined
+     * when the type cannot be awaited.
+     */
+    async getAwaitedType(type: Type): Promise<Type | undefined> {
+        const data = await this.client.apiRequest<TypeResponse | null>("getAwaitedType", {
+            snapshot: this.snapshotId,
+            project: this.project.id,
+            type: type.id,
+        });
+        return data ? this.objectRegistry.getOrCreateType(data) : undefined;
+    }
+
+    /** Returns the symbol's name qualified by each of its parents. */
+    async getFullyQualifiedName(symbol: Symbol): Promise<string> {
+        return this.client.apiRequest<string>("getFullyQualifiedName", {
+            snapshot: this.snapshotId,
+            project: this.project.id,
+            symbol: symbol.id,
+        });
+    }
+
     /**
      * Get the type arguments of a type reference (e.g. the `string` in `Array<string>`).
      */
@@ -1875,6 +1958,14 @@ export interface PrintNodeOptions {
     preserveSourceNewlines?: boolean | undefined;
     neverAsciiEscape?: boolean | undefined;
     terminateUnterminatedLiterals?: boolean | undefined;
+    /** Whether the printer leaves the node's comments out. */
+    removeComments?: boolean | undefined;
+    /**
+     * The line break the printer writes, as a `NewLineKind`: 1 for CRLF, 2 for LF.
+     * Defaults to LF. Only the breaks the printer emits are affected, so a line
+     * break inside a template literal keeps whatever the source gave it.
+     */
+    newLine?: number | undefined;
 }
 
 export class Emitter {
@@ -1890,6 +1981,9 @@ export class Emitter {
         return this.client.apiRequest<string>("printNode", {
             data: base64,
             ...options,
+            // sourceText is reparsed under this name, and the parser wants an
+            // absolute, normalized one; only the script kind is read off it.
+            fileName: options.fileName === undefined ? undefined : rootedFileName(options.fileName),
         });
     }
 }
@@ -1967,6 +2061,7 @@ export class Symbol {
     private readonly exportSymbol!: number;
     private membersCache: Promise<ReadonlyMap<__String, Symbol>> | undefined;
     private exportsCache: Promise<ReadonlyMap<__String, Symbol>> | undefined;
+    private globalExportsCache: Promise<ReadonlyMap<__String, Symbol>> | undefined;
 
     constructor(data: SymbolResponse, objectRegistry: SnapshotObjectRegistry) {
         this.objectRegistry = objectRegistry;
@@ -2006,6 +2101,14 @@ export class Symbol {
      */
     getExports(): Promise<ReadonlyMap<__String, Symbol>> {
         return this.exportsCache ??= this.fetchSymbolTable("getExportsOfSymbol");
+    }
+
+    /**
+     * Get the UMD global exports this module symbol declares with `export as namespace X`,
+     * keyed by escaped name. The result is cached on the symbol.
+     */
+    getGlobalExports(): Promise<ReadonlyMap<__String, Symbol>> {
+        return this.globalExportsCache ??= this.fetchSymbolTable("getGlobalExportsOfSymbol");
     }
 
     private async fetchSymbolTable(method: string): Promise<ReadonlyMap<__String, Symbol>> {
@@ -2542,5 +2645,13 @@ export class Signature {
 
     get isAbstract(): boolean {
         return (this.flags & SignatureFlags.Abstract) !== 0;
+    }
+
+    async getJsDocTags(checker: Checker): Promise<readonly JSDocTagInfo[]> {
+        return checker.getJsDocTagsOfSignature(this);
+    }
+
+    async getDocumentationComment(checker: Checker): Promise<string> {
+        return checker.getDocumentationCommentOfSignature(this);
     }
 }
