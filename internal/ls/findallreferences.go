@@ -902,6 +902,24 @@ func (l *LanguageService) definitionToReferencedSymbolDefinitionInfo(ctx context
 	}
 }
 
+// GetDefinitionDisplayParts returns the classified runs that label a symbol
+// definition in a "find all references" view — the same text a hover shows, split
+// into its keyword, identifier and punctuation pieces.
+func (l *LanguageService) GetDefinitionDisplayParts(ctx context.Context, symbol *ast.Symbol, originalNode *ast.Node) []*lsproto.VSClassifiedTextRun {
+	element := l.getDefinitionKindAndDisplayParts(ctx, symbol, originalNode, true /*vsCapability*/)
+	if element == nil {
+		return nil
+	}
+	runs := element.Runs
+	// The classified path renders a signature by printing a call signature
+	// declaration, which ends in a semicolon the way one inside an interface body
+	// would. Hover's unclassified text has none, so neither should these runs.
+	if n := len(runs); n > 0 && runs[n-1].Text == ";" {
+		runs = runs[:n-1]
+	}
+	return runs
+}
+
 // getDefinitionKindAndDisplayParts returns the classified display text for a symbol definition.
 func (l *LanguageService) getDefinitionKindAndDisplayParts(ctx context.Context, symbol *ast.Symbol, originalNode *ast.Node, vsCapability bool) *lsproto.VSClassifiedTextElement {
 	program := l.GetProgram()

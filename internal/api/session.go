@@ -904,6 +904,7 @@ func (s *Session) handleInitialize(ctx context.Context) (*InitializeResponse, er
 	return &InitializeResponse{
 		UseCaseSensitiveFileNames: s.projectSession.FS().UseCaseSensitiveFileNames(),
 		CurrentDirectory:          s.projectSession.GetCurrentDirectory(),
+		Version:                   core.Version(),
 	}, nil
 }
 
@@ -2401,9 +2402,14 @@ func (s *Session) handlePrintNode(_ context.Context, params *PrintNodeParams) (s
 		return "", fmt.Errorf("%w: invalid base64 data: %w", ErrClientError, err)
 	}
 
-	node, err := encoder.DecodeNodes(data)
+	node, nodes, err := encoder.DecodeNodesIndexed(data)
 	if err != nil {
 		return "", fmt.Errorf("%w: failed to decode AST: %w", ErrClientError, err)
+	}
+
+	emitContext, err := emitContextForSyntheticComments(params.SyntheticComments, nodes)
+	if err != nil {
+		return "", err
 	}
 
 	p := printer.NewPrinter(printer.PrinterOptions{
@@ -2412,8 +2418,54 @@ func (s *Session) handlePrintNode(_ context.Context, params *PrintNodeParams) (s
 		TerminateUnterminatedLiterals: params.TerminateUnterminatedLiterals,
 		RemoveComments:                params.RemoveComments,
 		NewLine:                       core.NewLineKind(params.NewLine),
-	}, printer.PrintHandlers{}, nil)
+	}, printer.PrintHandlers{}, emitContext)
 	return p.Emit(node, parseSourceFileForPrinting(params)), nil
+}
+
+// emitContextForSyntheticComments replays the client's synthetic comments onto the
+// decoded nodes, returning nil when there are none so the printer keeps its
+// context-free path.
+func emitContextForSyntheticComments(all []*NodeSyntheticComments, nodes []*ast.Node) (*printer.EmitContext, error) {
+	if len(all) == 0 {
+		return nil, nil
+	}
+	emitContext := printer.NewEmitContext()
+	for _, nodeComments := range all {
+		if nodeComments == nil {
+			continue
+		}
+		if nodeComments.Node < 1 || nodeComments.Node >= len(nodes) || nodes[nodeComments.Node] == nil {
+			return nil, fmt.Errorf("%w: synthetic comments name node %d, which is not in the encoded tree", ErrClientError, nodeComments.Node)
+		}
+		node := nodes[nodeComments.Node]
+		if comments := toSynthesizedComments(nodeComments.Leading); comments != nil {
+			emitContext.SetSyntheticLeadingComments(node, comments)
+		}
+		if comments := toSynthesizedComments(nodeComments.Trailing); comments != nil {
+			emitContext.SetSyntheticTrailingComments(node, comments)
+		}
+	}
+	return emitContext, nil
+}
+
+func toSynthesizedComments(comments []*SyntheticComment) []printer.SynthesizedComment {
+	if len(comments) == 0 {
+		return nil
+	}
+	result := make([]printer.SynthesizedComment, 0, len(comments))
+	for _, comment := range comments {
+		if comment == nil {
+			continue
+		}
+		result = append(result, printer.SynthesizedComment{
+			Kind:               ast.Kind(comment.Kind),
+			Loc:                core.NewTextRange(-1, -1),
+			HasLeadingNewLine:  comment.HasLeadingNewline,
+			HasTrailingNewLine: comment.HasTrailingNewLine,
+			Text:               comment.Text,
+		})
+	}
+	return result
 }
 
 // parseSourceFileForPrinting reparses the text the node being printed came from.
@@ -3882,17 +3934,25 @@ func (s *Session) handleGetReferencedSymbolsForNode(ctx context.Context, params 
 			continue
 		}
 		var refs []NodeHandle
+		var writeAccess []bool
 		for _, ref := range entry.References() {
 			if ref.IsNodeEntry() {
 				refs = append(refs, sd.nodeHandleFrom(ref.Node()))
+				writeAccess = append(writeAccess, ast.IsWriteAccessForReference(ref.Node()))
 			}
 		}
 		re := ReferencedSymbolEntry{
-			Definition: sd.nodeHandleFrom(defNode),
-			References: refs,
+			Definition:  sd.nodeHandleFrom(defNode),
+			References:  refs,
+			WriteAccess: writeAccess,
 		}
 		if sym := entry.DefinitionSymbol(); sym != nil {
 			re.Symbol = sd.newSymbolResponse(sym, params.Project)
+			// the display node is the name, not the declaration: asking about the
+			// declaration renders it as a statement, trailing semicolon and all
+			for _, run := range langSvc.GetDefinitionDisplayParts(ctx, sym, core.OrElse(defNode.Name(), defNode)) {
+				re.DisplayParts = append(re.DisplayParts, &DisplayPart{Text: run.Text, Kind: run.ClassificationTypeName})
+			}
 		}
 		result = append(result, re)
 	}

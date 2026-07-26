@@ -23,11 +23,13 @@ import { TypePredicateKind } from "#enums/typePredicateKind";
 import {
     type __String,
     type Expression,
+    getEmitNode,
     type Identifier,
     ModifierFlags,
     type Node,
     type Path,
     type SourceFile,
+    type SynthesizedComment,
     type SyntaxKind,
     type TypeNode,
     unescapeLeadingUnderscores,
@@ -160,7 +162,14 @@ export class API<FromLSP extends boolean = false> {
     private initialized: boolean = false;
     private activeSnapshots: Set<Snapshot> = new Set();
     private latestSnapshot: Snapshot | undefined;
+    private compilerVersion: string | undefined;
     readonly internal: InternalAPI;
+
+    /** The compiler's own version, e.g. `7.1.0-dev`. */
+    get version(): string {
+        this.ensureInitialized();
+        return this.compilerVersion!;
+    }
 
     constructor(options: APIOptions | LSPConnectionOptions = {}) {
         this.client = new Client(options);
@@ -184,6 +193,7 @@ export class API<FromLSP extends boolean = false> {
             const getCanonicalFileName = createGetCanonicalFileName(response.useCaseSensitiveFileNames);
             const currentDirectory = response.currentDirectory;
             this.toPath = (fileName: string) => toPath(fileName, currentDirectory, getCanonicalFileName) as Path;
+            this.compilerVersion = response.version;
             this.initialized = true;
         }
     }
@@ -1304,7 +1314,9 @@ export class Checker {
     }
 
     getReferencedSymbolsForNode(node: Node, position: number): ReferencedSymbolEntry[] {
-        const data = this.client.apiRequest<{ definition: string; symbol?: SymbolResponse; references: string[]; }[] | null>("getReferencedSymbolsForNode", {
+        const data = this.client.apiRequest<
+            { definition: string; symbol?: SymbolResponse; references: string[]; displayParts?: DisplayPart[]; writeAccess?: boolean[]; }[] | null
+        >("getReferencedSymbolsForNode", {
             snapshot: this.snapshotId,
             project: this.project.id,
             node: getNodeId(node),
@@ -1314,6 +1326,8 @@ export class Checker {
             definition: new NodeHandle(entry.definition, this.project),
             symbol: entry.symbol ? this.objectRegistry.getOrCreateSymbol(entry.symbol) : undefined,
             references: (entry.references ?? []).map(h => new NodeHandle(h, this.project)),
+            displayParts: entry.displayParts ?? [],
+            writeAccess: entry.writeAccess ?? [],
         }));
     }
 
@@ -1983,6 +1997,20 @@ export interface PrintNodeOptions {
     newLine?: number | undefined;
 }
 
+/**
+ * The synthetic comments carried by any node in an encoded tree, addressed by the
+ * index the encoder wrote that node at. Nodes with no comments are left out.
+ */
+function collectSyntheticComments(nodeIndices: Map<Node, number>) {
+    const result: { node: number; leading?: SynthesizedComment[] | undefined; trailing?: SynthesizedComment[] | undefined; }[] = [];
+    for (const [node, index] of nodeIndices) {
+        const emitNode = getEmitNode(node);
+        if (emitNode?.leadingComments?.length || emitNode?.trailingComments?.length)
+            result.push({ node: index, leading: emitNode.leadingComments, trailing: emitNode.trailingComments });
+    }
+    return result;
+}
+
 export class Emitter {
     private client: Client;
 
@@ -1991,10 +2019,12 @@ export class Emitter {
     }
 
     printNode(node: Node, options: PrintNodeOptions = {}): string {
-        const encoded = encodeNode(node);
+        const nodeIndices = new Map<Node, number>();
+        const encoded = encodeNode(node, nodeIndices);
         const base64 = uint8ArrayToBase64(encoded);
         return this.client.apiRequest<string>("printNode", {
             data: base64,
+            syntheticComments: collectSyntheticComments(nodeIndices),
             ...options,
             // sourceText is reparsed under this name, and the parser wants an
             // absolute, normalized one; only the script kind is read off it.
@@ -2044,6 +2074,23 @@ export interface ReferencedSymbolEntry {
     symbol?: Symbol | undefined;
     /** The node handles for each reference to the symbol. */
     references: NodeHandle[];
+    /**
+     * The classified pieces of the definition's display text, e.g. `function`,
+     * ` `, `myFunction`, `(`, `)`, `:`, ` `, `void`. Empty when the definition
+     * resolved to no symbol.
+     */
+    displayParts: DisplayPart[];
+    /**
+     * For the reference at the same position in {@link references}, whether it
+     * writes the symbol rather than reads it.
+     */
+    writeAccess: boolean[];
+}
+
+/** One classified piece of a symbol's display text. */
+export interface DisplayPart {
+    text: string;
+    kind: string;
 }
 
 /** A single usage of a signature, pairing the reference name with its call expression (if any). */

@@ -95,6 +95,10 @@ export interface Node extends ReadonlyTextRange {
      * {@link getChildren} in ./children.ts, which this delegates to.
      */
     getChildren(sourceFile?: SourceFile): Node[];
+    getChildCount(sourceFile?: SourceFile): number;
+    getChildAt(index: number, sourceFile?: SourceFile): Node;
+    getFirstToken(sourceFile?: SourceFile): Node | undefined;
+    getLastToken(sourceFile?: SourceFile): Node | undefined;
     getSourceFile(): SourceFile;
     getStart(sourceFile?: SourceFile, includeJsDocComment?: boolean): number;
     getFullStart(): number;

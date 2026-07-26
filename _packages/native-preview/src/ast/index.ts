@@ -13,6 +13,7 @@ export * from "./ast.ts";
 export * from "./astnav.ts";
 export * from "./children.ts";
 export * from "./clone.ts";
+export * from "./comments.ts";
 export * from "./is.ts";
 export * from "./jsdoc.ts";
 export * from "./scanner.ts";

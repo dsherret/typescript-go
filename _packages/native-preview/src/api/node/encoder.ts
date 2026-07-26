@@ -215,8 +215,12 @@ export function encodeSourceFile(sourceFile: SourceFile): Uint8Array {
 /**
  * Encode an arbitrary AST node into the binary format.
  * When encoding a non-SourceFile node, the header hash and parse options fields will be zero.
+ *
+ * `nodeIndices`, when given, is filled with the index each node was written at.
+ * That is how anything carried beside the tree — synthetic comments, say — names
+ * the node it belongs to, since the decoder rebuilds the same indices.
  */
-export function encodeNode(node: Node): Uint8Array {
+export function encodeNode(node: Node, nodeIndices?: Map<Node, number>): Uint8Array {
     const strs = new StringTable();
     const extendedDataValues: number[] = [];
     const structuredWriter = new MsgpackWriter();
@@ -234,6 +238,7 @@ export function encodeNode(node: Node): Uint8Array {
     function visitNode(node: Node): void {
         nodeCount++;
         const currentIndex = nodeCount;
+        nodeIndices?.set(node, currentIndex);
 
         if (prevIndex !== 0) {
             // Set next pointer on previous sibling
@@ -318,6 +323,7 @@ export function encodeNode(node: Node): Uint8Array {
     // Encode root node
     nodeCount++;
     parentIndex++;
+    nodeIndices?.set(node, 1);
     const rootData = getNodeData(node, strs, extendedDataValues, structuredWriter);
     nodeValues.push(
         node.kind,

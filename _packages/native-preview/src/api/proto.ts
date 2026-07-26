@@ -129,6 +129,11 @@ export interface InitializeResponse {
     useCaseSensitiveFileNames: boolean;
     /** The server's current working directory */
     currentDirectory: string;
+    /**
+     * The compiler's own version, e.g. "7.1.0-dev". Not the version of any npm
+     * package wrapping it.
+     */
+    version: string;
 }
 
 export interface TypeAcquisition {

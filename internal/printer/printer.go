@@ -954,6 +954,19 @@ func (p *Printer) emitKeywordNodeEx(node *ast.TokenNode, flags tokenEmitFlags) {
 	p.exitTokenNode(node, state)
 }
 
+// emitEndOfFileNode writes a file's end-of-file token, which is only ever its
+// comments: the token itself has no text. Printing one on its own is how a caller
+// reaches a comment that trails the last statement in a file, since that comment
+// is this token's leading trivia.
+func (p *Printer) emitEndOfFileNode(node *ast.TokenNode) {
+	if node == nil {
+		return
+	}
+
+	state := p.enterTokenNode(node, tefNone)
+	p.exitTokenNode(node, state)
+}
+
 func (p *Printer) emitPunctuationNode(node *ast.TokenNode) {
 	p.emitPunctuationNodeEx(node, tefNone)
 }
@@ -5220,6 +5233,9 @@ func (p *Printer) Write(node *ast.Node, sourceFile *ast.SourceFile, writer EmitT
 	// Transformation nodes
 	case ast.KindNotEmittedTypeElement:
 		p.emitNotEmittedTypeElement(node.AsNotEmittedTypeElement())
+
+	case ast.KindEndOfFile:
+		p.emitEndOfFileNode(node)
 
 	default:
 		switch {

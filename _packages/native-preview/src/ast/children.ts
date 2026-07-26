@@ -92,6 +92,21 @@ export function getChildren(node: Node, sourceFile: SourceFile = node.getSourceF
     return children;
 }
 
+/**
+ * Returns the first child token of `node`, or `undefined` when it has none.
+ *
+ * Doc comments are skipped: classic looks past them for the first child that is
+ * not a JSDoc node, so a documented declaration's first token is its own first
+ * keyword rather than the comment's asterisk.
+ */
+export function getFirstToken(node: Node, sourceFile: SourceFile = node.getSourceFile()): Node | undefined {
+    const children = getChildren(node, sourceFile);
+    const child = children.find(kid => kid.kind < SyntaxKind.FirstJSDocNode || kid.kind > SyntaxKind.LastJSDocNode);
+    if (child === undefined)
+        return undefined;
+    return child.kind <= SyntaxKind.LastToken ? child : getFirstToken(child, sourceFile);
+}
+
 /** Returns the last child token of `node`, or `undefined` when it has none. */
 export function getLastToken(node: Node, sourceFile: SourceFile = node.getSourceFile()): Node | undefined {
     const children = getChildren(node, sourceFile);

@@ -240,6 +240,9 @@ type InitializeResponse struct {
 	UseCaseSensitiveFileNames bool `json:"useCaseSensitiveFileNames"`
 	// CurrentDirectory is the server's current working directory.
 	CurrentDirectory string `json:"currentDirectory"`
+	// Version is the compiler's own version, e.g. "7.1.0-dev". Not the version of
+	// any npm package wrapping it.
+	Version string `json:"version"`
 }
 
 // DocumentIdentifier identifies a document by either a file name (plain string) or a URI object.
@@ -950,6 +953,18 @@ type ReferencedSymbolEntry struct {
 	Definition NodeHandle      `json:"definition"`
 	Symbol     *SymbolResponse `json:"symbol,omitempty"`
 	References []NodeHandle    `json:"references"`
+	// DisplayParts label the definition, e.g. "function", " ", "myFunction", "(",
+	// ")", ":", " ", "void" for a void function.
+	DisplayParts []*DisplayPart `json:"displayParts,omitempty"`
+	// WriteAccess says, for the reference at the same position in References,
+	// whether it writes the symbol rather than reads it.
+	WriteAccess []bool `json:"writeAccess,omitempty"`
+}
+
+// DisplayPart is one classified piece of a symbol's display text.
+type DisplayPart struct {
+	Text string `json:"text"`
+	Kind string `json:"kind"`
 }
 
 // GetSignatureUsagesParams are the parameters for the getSignatureUsages method.
@@ -1302,6 +1317,25 @@ type PrintNodeParams struct {
 	// CRLF, 2 emits LF. The printer writes the line breaks, so text a line break
 	// is part of — a template literal's, say — is left alone.
 	NewLine uint32 `json:"newLine,omitempty"`
+	// SyntheticComments are comments the client attached to nodes rather than ones
+	// SourceText contains, addressed by the index the node was encoded at.
+	SyntheticComments []*NodeSyntheticComments `json:"syntheticComments,omitempty"`
+}
+
+// NodeSyntheticComments are the comments a client attached to one encoded node.
+type NodeSyntheticComments struct {
+	Node     int                 `json:"node"`
+	Leading  []*SyntheticComment `json:"leading,omitempty"`
+	Trailing []*SyntheticComment `json:"trailing,omitempty"`
+}
+
+// SyntheticComment is a comment carried on a node instead of read from a file.
+type SyntheticComment struct {
+	// Kind is an ast.Kind: SingleLineCommentTrivia or MultiLineCommentTrivia.
+	Kind               int    `json:"kind"`
+	Text               string `json:"text"`
+	HasTrailingNewLine bool   `json:"hasTrailingNewLine,omitempty"`
+	HasLeadingNewline  bool   `json:"hasLeadingNewline,omitempty"`
 }
 
 type EmitParams struct {

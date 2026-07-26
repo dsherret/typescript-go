@@ -1,6 +1,8 @@
 import {
     type FileReference,
     getChildren,
+    getFirstToken,
+    getLastToken,
     ModifierFlags,
     type Node,
     type SourceFile,
@@ -168,6 +170,24 @@ export class RemoteNodeBase {
     getChildren(sourceFile?: SourceFile): Node[] {
         const node = this as unknown as Node;
         return getChildren(node, sourceFile ?? node.getSourceFile());
+    }
+
+    getChildCount(sourceFile?: SourceFile): number {
+        return this.getChildren(sourceFile).length;
+    }
+
+    getChildAt(index: number, sourceFile?: SourceFile): Node {
+        return this.getChildren(sourceFile)[index];
+    }
+
+    getFirstToken(sourceFile?: SourceFile): Node | undefined {
+        const node = this as unknown as Node;
+        return getFirstToken(node, sourceFile ?? node.getSourceFile());
+    }
+
+    getLastToken(sourceFile?: SourceFile): Node | undefined {
+        const node = this as unknown as Node;
+        return getLastToken(node, sourceFile ?? node.getSourceFile());
     }
 
     get pos(): number {
