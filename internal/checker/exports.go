@@ -299,6 +299,11 @@ func (c *Checker) GetRestTypeOfSignature(sig *Signature) *Type {
 }
 
 func (c *Checker) GetTypeArguments(t *Type) []*Type {
+	// getTypeArguments dereferences the type's TypeReference data, which only a
+	// reference type has; anything else has no type arguments to report
+	if t.Flags()&TypeFlagsObject == 0 || t.ObjectFlags()&ObjectFlagsReference == 0 {
+		return nil
+	}
 	return c.getTypeArguments(t)
 }
 

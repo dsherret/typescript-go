@@ -1,4 +1,5 @@
 import type { CheckFlags } from "#enums/checkFlags";
+import type { DiagnosticCategory } from "#enums/diagnosticCategory";
 import type { CompletionItemKind } from "#enums/completionItemKind";
 import type { ModuleKind } from "#enums/moduleKind";
 import type {
@@ -137,6 +138,26 @@ export interface ParsedCommandLine {
     projectReferences?: ProjectReference[];
     typeAcquisition?: TypeAcquisition;
     compileOnSave?: boolean;
+    /** Diagnostics produced while parsing the config file. */
+    errors?: ProtoDiagnostic[];
+}
+
+/**
+ * A diagnostic as it appears on the wire. Structurally the same as the
+ * `Diagnostic` the sync and async APIs expose, declared here so the protocol
+ * types do not depend on either of them.
+ */
+export interface ProtoDiagnostic {
+    readonly fileName?: string;
+    readonly pos: number;
+    readonly end: number;
+    readonly code: number;
+    readonly category: DiagnosticCategory;
+    readonly text: string;
+    readonly reportsUnnecessary?: boolean;
+    readonly reportsDeprecated?: boolean;
+    readonly messageChain?: readonly ProtoDiagnostic[];
+    readonly relatedInformation?: readonly ProtoDiagnostic[];
 }
 
 export interface LSPUpdateSnapshotParams {

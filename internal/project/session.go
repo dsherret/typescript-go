@@ -63,6 +63,11 @@ type SessionOptions struct {
 	PushDiagnosticsEnabled bool
 	DebounceDelay          time.Duration
 	CheckerPoolOptions     CheckerPoolOptions
+	// AllowNonTsExtensions forces the compiler option of the same name on every
+	// configured project. Inferred projects already set it, because the host owns
+	// their file list and may put a file of any extension in it; a host that drives
+	// a configured project the same way needs the same allowance.
+	AllowNonTsExtensions bool
 }
 
 type SessionInit struct {
@@ -1236,21 +1241,7 @@ func (s *Session) updateSnapshotRef(ctx context.Context, overlays map[tspath.Pat
 }
 
 func (s *Session) updateSnapshot(ctx context.Context, overlays map[tspath.Path]*Overlay, change SnapshotChange, callerRef bool) *Snapshot {
-	s.snapshotMu.Lock()
-	oldSnapshot := s.snapshot
-	newSnapshot := oldSnapshot.Clone(ctx, change, overlays, s)
-	s.snapshot = newSnapshot
-	if callerRef {
-		newSnapshot.ref()
-	}
-	if newSnapshot != oldSnapshot {
-		// Release the session's reference to the old snapshot. The new snapshot's
-		// clone ref (1) is transferred to become the session's ref for its current
-		// snapshot. Other holders (e.g. active handlers) keep the old snapshot alive
-		// via their own refs until they complete.
-		oldSnapshot.Deref(s)
-	}
-	s.snapshotMu.Unlock()
+	oldSnapshot, newSnapshot := s.swapSnapshot(ctx, overlays, change, callerRef)
 
 	// Enqueue ATA updates if needed
 	if s.typingsInstaller != nil && !s.Config().IsATADisabled() {
@@ -1277,6 +1268,34 @@ func (s *Session) updateSnapshot(ctx context.Context, overlays map[tspath.Path]*
 	})
 
 	return newSnapshot
+}
+
+// swapSnapshot clones the current snapshot under snapshotMu and installs the
+// result, returning the old and new snapshots.
+//
+// It exists so the unlock can be deferred without holding the lock across the
+// background work updateSnapshot queues afterwards. Cloning parses files, which
+// can panic — a failing filesystem callback, for instance — and an unlock that
+// only runs on the success path would leave snapshotMu held forever, deadlocking
+// every later request even though the panic itself was recovered.
+func (s *Session) swapSnapshot(ctx context.Context, overlays map[tspath.Path]*Overlay, change SnapshotChange, callerRef bool) (oldSnapshot, newSnapshot *Snapshot) {
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
+
+	oldSnapshot = s.snapshot
+	newSnapshot = oldSnapshot.Clone(ctx, change, overlays, s)
+	s.snapshot = newSnapshot
+	if callerRef {
+		newSnapshot.ref()
+	}
+	if newSnapshot != oldSnapshot {
+		// Release the session's reference to the old snapshot. The new snapshot's
+		// clone ref (1) is transferred to become the session's ref for its current
+		// snapshot. Other holders (e.g. active handlers) keep the old snapshot alive
+		// via their own refs until they complete.
+		oldSnapshot.Deref(s)
+	}
+	return oldSnapshot, newSnapshot
 }
 
 // WaitForBackgroundTasks waits for all background tasks to complete.

@@ -1802,6 +1802,18 @@ export class Checker {
         return signature.id === (await this.getWellKnownSignatures()).unknown;
     }
 
+    /**
+     * Returns the symbols of the project's ambient module declarations, that is
+     * every global whose name is a quoted module specifier.
+     */
+    async getAmbientModules(): Promise<readonly Symbol[]> {
+        const data = await this.client.apiRequest<SymbolResponse[] | null>("getAmbientModules", {
+            snapshot: this.snapshotId,
+            project: this.project.id,
+        });
+        return data ? data.map(d => this.objectRegistry.getOrCreateSymbol(d)) : [];
+    }
+
     async getExportsOfModule(symbol: Symbol): Promise<readonly Symbol[]> {
         const data = await this.client.apiRequest<SymbolResponse[] | null>("getExportsOfModule", {
             snapshot: this.snapshotId,
@@ -1852,6 +1864,14 @@ export class Checker {
 }
 
 export interface PrintNodeOptions {
+    /**
+     * Text of the file the node was parsed from. The printer reads comments and
+     * original token text out of it, so a node printed without it prints without
+     * its comments.
+     */
+    sourceText?: string | undefined;
+    /** Names the script kind `sourceText` is parsed as. */
+    fileName?: string | undefined;
     preserveSourceNewlines?: boolean | undefined;
     neverAsciiEscape?: boolean | undefined;
     terminateUnterminatedLiterals?: boolean | undefined;

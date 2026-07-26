@@ -95,6 +95,10 @@ func (s *Session) handleRename(ctx context.Context, params *RenameParams) ([]*Fi
 
 	converters := setup.snapshot.Converters()
 
+	if params.UseAliasesForRename != nil {
+		setup.langSvc.SetUseAliasesForRename(core.IfElse(*params.UseAliasesForRename, core.TSTrue, core.TSFalse))
+	}
+
 	// A nil orchestrator selects the single-project path: renames are resolved
 	// against this project's program only, which is the API's model.
 	response, err := setup.langSvc.ProvideRename(ctx, &lsproto.RenameParams{
@@ -105,7 +109,18 @@ func (s *Session) handleRename(ctx context.Context, params *RenameParams) ([]*Fi
 	if err != nil {
 		return nil, err
 	}
-	if response.WorkspaceEdit == nil || response.WorkspaceEdit.Changes == nil {
+	if response.WorkspaceEdit == nil {
+		return []*FileTextEdits{}, nil
+	}
+	// DocumentChanges carries versioned edits plus create/rename/delete-file
+	// operations, none of which this API models. It is only populated when the
+	// client advertises the capability, which it deliberately does not (see
+	// InProcessServerOptions) — fail loudly if that ever changes rather than
+	// returning a truncated edit set.
+	if response.WorkspaceEdit.DocumentChanges != nil {
+		return nil, fmt.Errorf("%w: rename returned unsupported document changes", ErrClientError)
+	}
+	if response.WorkspaceEdit.Changes == nil {
 		return []*FileTextEdits{}, nil
 	}
 
@@ -114,7 +129,9 @@ func (s *Session) handleRename(ctx context.Context, params *RenameParams) ([]*Fi
 		fileName := uri.FileName()
 		sourceFile := setup.program.GetSourceFile(fileName)
 		if sourceFile == nil {
-			continue
+			// Dropping this file's edits would silently return a partial rename,
+			// which corrupts the source it is applied to.
+			return nil, fmt.Errorf("%w: rename touches a file that is not in the program: %s", ErrClientError, fileName)
 		}
 		result = append(result, &FileTextEdits{
 			FileName: fileName,
@@ -235,17 +252,27 @@ func (s *Session) handleGetCodeFixes(ctx context.Context, params *GetCodeFixesPa
 		if action == nil || action.Edit == nil || action.Edit.Changes == nil {
 			continue
 		}
+		if action.Edit.DocumentChanges != nil {
+			return nil, fmt.Errorf("%w: code fix %q returned unsupported document changes", ErrClientError, action.Title)
+		}
 		fix := &CodeFixAction{Description: action.Title}
+		incomplete := false
 		for uri, edits := range *action.Edit.Changes {
 			fileName := uri.FileName()
 			sourceFile := setup.program.GetSourceFile(fileName)
 			if sourceFile == nil {
-				continue
+				// A fix is a unit: applying only the part that lands in the
+				// program would leave the code half-fixed. Drop the whole fix.
+				incomplete = true
+				break
 			}
 			fix.Changes = append(fix.Changes, &FileTextEdits{
 				FileName: fileName,
 				Edits:    toAPITextEdits(sourceFile, converters, edits),
 			})
+		}
+		if incomplete {
+			continue
 		}
 		slices.SortFunc(fix.Changes, func(a, b *FileTextEdits) int {
 			return strings.Compare(a.FileName, b.FileName)
@@ -255,6 +282,28 @@ func (s *Session) handleGetCodeFixes(ctx context.Context, params *GetCodeFixesPa
 		}
 	}
 	return result, nil
+}
+
+// handleGetAmbientModules returns the symbols of the project's ambient module
+// declarations, i.e. every global whose name is a quoted module specifier.
+func (s *Session) handleGetAmbientModules(ctx context.Context, params *GetIntrinsicTypeParams) ([]*SymbolResponse, error) {
+	setup, err := s.setupChecker(ctx, params.Snapshot, params.Project)
+	if err != nil {
+		return nil, err
+	}
+	defer setup.done()
+
+	modules := setup.checker.GetAmbientModules()
+	if len(modules) == 0 {
+		return nil, nil
+	}
+	slices.SortFunc(modules, setup.checker.CompareSymbols)
+
+	results := make([]*SymbolResponse, len(modules))
+	for i, module := range modules {
+		results[i] = setup.newSymbolResponse(module)
+	}
+	return results, nil
 }
 
 // languageServiceSetup bundles the state a language service handler needs: the

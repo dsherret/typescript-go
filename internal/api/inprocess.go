@@ -46,6 +46,8 @@ func NewInProcessServer(ctx context.Context, options *InProcessServerOptions) *I
 		panic("InProcessServerOptions.Cwd is required")
 	}
 
+	ctx = lsproto.WithClientCapabilities(ctx, apiClientCapabilities())
+
 	fs := options.FS
 
 	// Wrap the base FS with callbackFS if callbacks are requested.
@@ -63,6 +65,10 @@ func NewInProcessServer(ctx context.Context, options *InProcessServerOptions) *I
 			DefaultLibraryPath: options.DefaultLibraryPath,
 			PositionEncoding:   lsproto.PositionEncodingKindUTF8,
 			LoggingEnabled:     false,
+			// An API client owns the project's file list the way tsserver owns an
+			// inferred project's, so a file it names is in the project whatever its
+			// extension — the same allowance NewInferredProject makes.
+			AllowNonTsExtensions: true,
 		},
 	})
 
@@ -110,4 +116,18 @@ func (s *InProcessServer) HandleRequest(ctx context.Context, method string, para
 // Close releases the underlying session's resources.
 func (s *InProcessServer) Close() {
 	s.session.Close()
+}
+
+// apiClientCapabilities describes what an API client supports, so that
+// capability-gated language service behaviour is a deliberate choice rather than
+// whatever the zero value happens to mean.
+//
+// Everything is off. The API returns plain per-file edit lists, so it cannot
+// carry a WorkspaceEdit's DocumentChanges — neither the versioned TextDocumentEdits
+// nor the create/rename/delete-file resource operations that come with them.
+// Turning DocumentChanges on without also extending FileTextEdits would make
+// rename and code fixes return document changes the handlers do not read; they
+// reject that explicitly instead of silently truncating.
+func apiClientCapabilities() *lsproto.ResolvedClientCapabilities {
+	return &lsproto.ResolvedClientCapabilities{}
 }

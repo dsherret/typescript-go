@@ -3,6 +3,7 @@ package ls
 import (
 	"github.com/microsoft/typescript-go/internal/ast"
 	"github.com/microsoft/typescript-go/internal/compiler"
+	"github.com/microsoft/typescript-go/internal/core"
 	"github.com/microsoft/typescript-go/internal/ls/autoimport"
 	"github.com/microsoft/typescript-go/internal/ls/lsconv"
 	"github.com/microsoft/typescript-go/internal/ls/lsutil"
@@ -47,6 +48,12 @@ func (l *LanguageService) GetProgram() *compiler.Program {
 
 func (l *LanguageService) UserPreferences() lsutil.UserPreferences {
 	return l.activeConfig
+}
+
+// SetUseAliasesForRename overrides the providePrefixAndSuffixTextForRename user
+// preference, which a client can only otherwise set for a whole snapshot.
+func (l *LanguageService) SetUseAliasesForRename(value core.Tristate) {
+	l.activeConfig.UseAliasesForRename = value
 }
 
 func (l *LanguageService) FormatOptions() lsutil.FormatCodeSettings {

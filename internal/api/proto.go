@@ -161,6 +161,7 @@ const (
 	MethodGetDefinition                     Method = "getDefinition"
 	MethodGetImplementations                Method = "getImplementations"
 	MethodGetCodeFixes                      Method = "getCodeFixes"
+	MethodGetAmbientModules                 Method = "getAmbientModules"
 	MethodGetTrueTypeOfConditionalType      Method = "getTrueTypeOfConditionalType"
 	MethodGetFalseTypeOfConditionalType     Method = "getFalseTypeOfConditionalType"
 	MethodGetConstantValue                  Method = "getConstantValue"
@@ -483,6 +484,7 @@ var unmarshalers = map[Method]func([]byte) (any, error){
 	MethodGetDefinition:                     unmarshallerFor[FilePositionParams],
 	MethodGetImplementations:                unmarshallerFor[FilePositionParams],
 	MethodGetCodeFixes:                      unmarshallerFor[GetCodeFixesParams],
+	MethodGetAmbientModules:                 unmarshallerFor[GetIntrinsicTypeParams],
 	MethodGetConstantValue:                  unmarshallerFor[CheckerNodeParams],
 	MethodGetSignatureFromDeclaration:       unmarshallerFor[CheckerNodeParams],
 	MethodGetExportSpecifierLocalTarget:     unmarshallerFor[CheckerNodeParams],
@@ -552,6 +554,8 @@ type ConfigFileResponse struct {
 	ProjectReferences []*core.ProjectReference `json:"projectReferences,omitempty"`
 	TypeAcquisition   *core.TypeAcquisition    `json:"typeAcquisition,omitempty"`
 	CompileOnSave     *bool                    `json:"compileOnSave,omitempty"`
+	// Errors are the diagnostics produced while parsing the config file.
+	Errors []*DiagnosticResponse `json:"errors,omitempty"`
 }
 
 type GetDefaultProjectForFileParams struct {
@@ -586,6 +590,7 @@ func NewConfigFileResponse(parsedCommandLine *tsoptions.ParsedCommandLine) *Conf
 		ProjectReferences: parsedCommandLine.ProjectReferences(),
 		TypeAcquisition:   parsedCommandLine.TypeAcquisition(),
 		CompileOnSave:     compileOnSave,
+		Errors:            NewDiagnosticResponses(parsedCommandLine.GetConfigFileParsingDiagnostics()),
 	}
 }
 
@@ -1202,6 +1207,11 @@ type RenameParams struct {
 	File     DocumentIdentifier `json:"file"`
 	Position int                `json:"position"`
 	NewName  string             `json:"newName"`
+	// UseAliasesForRename overrides the providePrefixAndSuffixTextForRename user
+	// preference. When false, a shorthand property assignment, binding element,
+	// or import/export specifier is renamed outright rather than being given the
+	// old name as an alias. Nil leaves the snapshot's preference in place.
+	UseAliasesForRename *bool `json:"useAliasesForRename,omitempty"`
 }
 
 // OrganizeImportsParams are the parameters for the organizeImports method.
@@ -1233,7 +1243,12 @@ type SignatureToSignatureDeclarationParams struct {
 
 // PrintNodeParams are the parameters for the printNode method.
 type PrintNodeParams struct {
-	Data                          string `json:"data"` // base64-encoded binary AST data
+	Data string `json:"data"` // base64-encoded binary AST data
+	// SourceText is the text of the file the node was parsed from. Comments and
+	// original token text are read out of it, so a node printed without it prints
+	// without its comments.
+	SourceText                    string `json:"sourceText,omitempty"`
+	FileName                      string `json:"fileName,omitempty"` // names the script kind SourceText is parsed as
 	PreserveSourceNewlines        bool   `json:"preserveSourceNewlines,omitempty"`
 	NeverAsciiEscape              bool   `json:"neverAsciiEscape,omitempty"`
 	TerminateUnterminatedLiterals bool   `json:"terminateUnterminatedLiterals,omitempty"`

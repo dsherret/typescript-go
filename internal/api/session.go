@@ -24,6 +24,7 @@ import (
 	"github.com/microsoft/typescript-go/internal/ls/lsconv"
 	"github.com/microsoft/typescript-go/internal/lsp/lsproto"
 	"github.com/microsoft/typescript-go/internal/nodebuilder"
+	"github.com/microsoft/typescript-go/internal/parser"
 	"github.com/microsoft/typescript-go/internal/pprof"
 	"github.com/microsoft/typescript-go/internal/printer"
 	"github.com/microsoft/typescript-go/internal/project"
@@ -763,6 +764,8 @@ func (s *Session) HandleRequest(ctx context.Context, method string, params json.
 		return s.handleGetImplementations(ctx, parsed.(*FilePositionParams))
 	case string(MethodGetCodeFixes):
 		return s.handleGetCodeFixes(ctx, parsed.(*GetCodeFixesParams))
+	case string(MethodGetAmbientModules):
+		return s.handleGetAmbientModules(ctx, parsed.(*GetIntrinsicTypeParams))
 	case string(MethodGetConstantValue):
 		return s.handleGetConstantValue(ctx, parsed.(*CheckerNodeParams))
 	case string(MethodGetSignatureFromDeclaration):
@@ -2379,7 +2382,31 @@ func (s *Session) handlePrintNode(_ context.Context, params *PrintNodeParams) (s
 		NeverAsciiEscape:              params.NeverAsciiEscape,
 		TerminateUnterminatedLiterals: params.TerminateUnterminatedLiterals,
 	}, printer.PrintHandlers{}, nil)
-	return p.Emit(node, nil), nil
+	return p.Emit(node, parseSourceFileForPrinting(params)), nil
+}
+
+// parseSourceFileForPrinting reparses the text the node being printed came from.
+//
+// The printer reads comments and original token text off the source file the node
+// belongs to, and a node that arrived as its own encoded subtree has none. The
+// text is reparsed rather than the node relocated into it: only the text and its
+// line map are read, and the node's positions already index into that text.
+func parseSourceFileForPrinting(params *PrintNodeParams) *ast.SourceFile {
+	if params.SourceText == "" {
+		return nil
+	}
+	fileName := params.FileName
+	if fileName == "" {
+		fileName = "/printNode.ts"
+	}
+	scriptKind := core.GetScriptKindFromFileName(fileName)
+	if scriptKind == core.ScriptKindUnknown {
+		scriptKind = core.ScriptKindTS
+	}
+	return parser.ParseSourceFile(ast.SourceFileParseOptions{
+		FileName: fileName,
+		Path:     tspath.Path(fileName),
+	}, params.SourceText, scriptKind)
 }
 
 func (s *Session) handleEmit(ctx context.Context, params *EmitParams) (*EmitResponse, error) {

@@ -125,6 +125,7 @@ import type {
     LiteralType,
     NumberLiteralType,
     ObjectType,
+    RenameOptions,
     StringLiteralType,
     StringMappingType,
     SubstitutionType,
@@ -142,7 +143,7 @@ import type {
 
 export { documentURIToFileName, fileNameToDocumentURI } from "../path.ts";
 export { CheckFlags, CompletionItemKind, DiagnosticCategory, ElementFlags, EmitOnly, ModifierFlags, ModuleKind, NodeBuilderFlags, ObjectFlags, SignatureFlags, SignatureKind, SymbolFlags, TypeFlags, TypePredicateKind };
-export type { APIOptions, AssertsIdentifierTypePredicate, AssertsThisTypePredicate, BigIntLiteralType, BooleanLiteralType, ClientSocketOptions, ClientSpawnOptions, CompilerOptions, CompletionEntry, CompletionInfo, CompletionOptions, ConditionalType, Diagnostic, DocumentIdentifier, DocumentPosition, EmitOutput, EmitOutputFile, EmitResult, FreshableType, GetImportEditsForSymbolsOptions, IdentifierTypePredicate, ImportAdderAction, IndexedAccessType, IndexInfo, IndexType, InterfaceType, IntersectionType, IntrinsicType, JSDocTagInfo, LiteralType, LSPConnectionOptions, NumberLiteralType, ObjectType, ParsedCommandLine, ProjectReference, RequestTiming, SourceFileMetadata, StringLiteralType, StringMappingType, SubstitutionType, TemplateLiteralType, TextEdit, ThisTypePredicate, TimingAccumulators, TimingInfo, TupleType, Type, TypeAcquisition, TypeParameter, TypePredicate, TypePredicateBase, TypeReference, UnionOrIntersectionType, UnionType };
+export type { APIOptions, AssertsIdentifierTypePredicate, AssertsThisTypePredicate, BigIntLiteralType, BooleanLiteralType, ClientSocketOptions, ClientSpawnOptions, CompilerOptions, CompletionEntry, CompletionInfo, CompletionOptions, ConditionalType, Diagnostic, DocumentIdentifier, DocumentPosition, EmitOutput, EmitOutputFile, EmitResult, FreshableType, GetImportEditsForSymbolsOptions, IdentifierTypePredicate, ImportAdderAction, IndexedAccessType, IndexInfo, IndexType, InterfaceType, IntersectionType, IntrinsicType, JSDocTagInfo, LiteralType, LSPConnectionOptions, NumberLiteralType, ObjectType, ParsedCommandLine, ProjectReference, RenameOptions, RequestTiming, SourceFileMetadata, StringLiteralType, StringMappingType, SubstitutionType, TemplateLiteralType, TextEdit, ThisTypePredicate, TimingAccumulators, TimingInfo, TupleType, Type, TypeAcquisition, TypeParameter, TypePredicate, TypePredicateBase, TypeReference, UnionOrIntersectionType, UnionType };
 
 interface EmitOutputResponse {
     readonly emitSkipped: boolean;
@@ -805,14 +806,20 @@ export class Project {
     /**
      * Returns the edits that rename the symbol at `position`, grouped by file.
      * An empty result means the element cannot be renamed.
+     *
+     * `useAliasesForRename` overrides the providePrefixAndSuffixTextForRename
+     * user preference: when false, a shorthand property assignment, binding
+     * element, or import/export specifier is renamed outright instead of being
+     * given the old name as an alias.
      */
-    rename(file: DocumentIdentifier, position: number, newName: string): readonly FileTextEdits[] {
+    rename(file: DocumentIdentifier, position: number, newName: string, options: RenameOptions = {}): readonly FileTextEdits[] {
         const data = this.client.apiRequest<FileTextEdits[]>("rename", {
             snapshot: this.snapshotId,
             project: this.id,
             file,
             position,
             newName,
+            ...(options.useAliasesForRename !== undefined ? { useAliasesForRename: options.useAliasesForRename } : {}),
         });
         return data ?? [];
     }
@@ -1810,6 +1817,18 @@ export class Checker {
         return signature.id === (this.getWellKnownSignatures()).unknown;
     }
 
+    /**
+     * Returns the symbols of the project's ambient module declarations, that is
+     * every global whose name is a quoted module specifier.
+     */
+    getAmbientModules(): readonly Symbol[] {
+        const data = this.client.apiRequest<SymbolResponse[] | null>("getAmbientModules", {
+            snapshot: this.snapshotId,
+            project: this.project.id,
+        });
+        return data ? data.map(d => this.objectRegistry.getOrCreateSymbol(d)) : [];
+    }
+
     getExportsOfModule(symbol: Symbol): readonly Symbol[] {
         const data = this.client.apiRequest<SymbolResponse[] | null>("getExportsOfModule", {
             snapshot: this.snapshotId,
@@ -1860,6 +1879,14 @@ export class Checker {
 }
 
 export interface PrintNodeOptions {
+    /**
+     * Text of the file the node was parsed from. The printer reads comments and
+     * original token text out of it, so a node printed without it prints without
+     * its comments.
+     */
+    sourceText?: string | undefined;
+    /** Names the script kind `sourceText` is parsed as. */
+    fileName?: string | undefined;
     preserveSourceNewlines?: boolean | undefined;
     neverAsciiEscape?: boolean | undefined;
     terminateUnterminatedLiterals?: boolean | undefined;
