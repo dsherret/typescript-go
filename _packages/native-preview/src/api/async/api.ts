@@ -943,6 +943,26 @@ export class Program {
     }
 
     /**
+     * Every source file in the program.
+     *
+     * Each one is fetched and decoded on the way out, so a caller that only needs
+     * the names should ask for {@link getSourceFileNames} instead.
+     */
+    async getSourceFiles(): Promise<readonly SourceFile[]> {
+        const files: SourceFile[] = [];
+        for (const fileName of await this.getSourceFileNames()) {
+            const file = await this.getSourceFile(fileName);
+            if (file !== undefined) files.push(file);
+        }
+        return files;
+    }
+
+    /** The checker for this program, which the project owns. */
+    getTypeChecker(): Checker {
+        return this.project.checker;
+    }
+
+    /**
      * Returns program-stored metadata for the given source file, or `undefined` if the file
      * is not part of the program. Metadata is fetched lazily per file and cached on this
      * `Program` instance.
