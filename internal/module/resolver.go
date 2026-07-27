@@ -290,15 +290,15 @@ func (r *Resolver) ResolveModuleName(moduleName string, containingFile string, r
 	// same key as any other, so the host is asked once per specifier per directory.
 	if hook, ok := r.host.(ModuleNameResolutionHook); ok {
 		if answer, handled := hook.ResolveModuleNameFromHost(moduleName, containingFile, resolutionMode); handled {
-			if traceBuilder != nil {
-				traceBuilder.write(diagnostics.Resolving_module_0_from_1, moduleName, containingFile)
-			}
 			// A rewritten specifier is resolved from here on as if it had been
 			// written that way. The cache stays keyed on what the file actually
 			// says, so the host is asked once per specifier per directory.
 			if answer != nil && answer.ModuleName != "" {
 				moduleName = answer.ModuleName
 			} else {
+				if traceBuilder != nil {
+					traceBuilder.write(diagnostics.Resolving_module_0_from_1, moduleName, containingFile)
+				}
 				resolved := answer.GetResolved()
 				r.moduleResolutionCache.Set(cacheKey, resolved)
 				return resolved, traceBuilder.getTraces()
