@@ -56,6 +56,13 @@ func (l *LanguageService) SetUseAliasesForRename(value core.Tristate) {
 	l.activeConfig.UseAliasesForRename = value
 }
 
+// SetQuotePreference overrides the quotePreference user preference, which a
+// client can only otherwise set for a whole snapshot. It decides the quotes a
+// code fix writes a new string literal with; "auto" infers them from the file.
+func (l *LanguageService) SetQuotePreference(value lsutil.QuotePreference) {
+	l.activeConfig.QuotePreference = value
+}
+
 func (l *LanguageService) FormatOptions() lsutil.FormatCodeSettings {
 	return l.activeConfig.FormatCodeSettings
 }

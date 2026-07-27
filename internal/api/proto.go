@@ -1236,6 +1236,10 @@ type GetCodeFixesParams struct {
 	Pos        int                `json:"pos"`
 	End        int                `json:"end"`
 	ErrorCodes []int              `json:"errorCodes,omitempty"`
+	// QuotePreference decides the quotes a fix writes a new string literal with:
+	// "single", "double", or "auto" to infer them from the file. Empty leaves the
+	// snapshot's preference in place.
+	QuotePreference string `json:"quotePreference,omitempty"`
 }
 
 // GetCombinedCodeFixParams are the parameters for the getCombinedCodeFix
@@ -1250,6 +1254,10 @@ type GetCombinedCodeFixParams struct {
 	// Options formats the text the fix inserts. Unset fields fall back to the
 	// server's defaults, as they do for formatDocument.
 	Options *FormattingOptions `json:"options,omitempty"`
+	// QuotePreference decides the quotes a fix writes a new string literal with:
+	// "single", "double", or "auto" to infer them from the file. Empty leaves the
+	// snapshot's preference in place.
+	QuotePreference string `json:"quotePreference,omitempty"`
 }
 
 // CombinedCodeActions is the result of getCombinedCodeFix: a description plus

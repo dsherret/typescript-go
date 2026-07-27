@@ -188,6 +188,10 @@ func (s *Session) handleGetCodeFixes(ctx context.Context, params *GetCodeFixesPa
 	}
 	defer setup.done()
 
+	if err := applyQuotePreference(setup.langSvc, params.QuotePreference); err != nil {
+		return nil, err
+	}
+
 	diagnosticsResponse, err := setup.langSvc.ProvideDiagnostics(ctx, setup.documentURI)
 	if err != nil {
 		return nil, err
@@ -291,6 +295,10 @@ func (s *Session) handleGetCombinedCodeFix(ctx context.Context, params *GetCombi
 		return nil, err
 	}
 	defer setup.done()
+
+	if err := applyQuotePreference(setup.langSvc, params.QuotePreference); err != nil {
+		return nil, err
+	}
 
 	var formatOptions *lsutil.FormatCodeSettings
 	if params.Options != nil {
@@ -466,6 +474,20 @@ func (setup *languageServiceSetup) toAPIFileSpans(response lsproto.LocationOrLoc
 		})
 	}
 	return result
+}
+
+// applyQuotePreference overrides the language service's quote preference for
+// this request. An empty value leaves the snapshot's preference in place.
+func applyQuotePreference(langSvc *ls.LanguageService, value string) error {
+	switch lsutil.QuotePreference(value) {
+	case lsutil.QuotePreferenceUnknown:
+		return nil
+	case lsutil.QuotePreferenceAuto, lsutil.QuotePreferenceDouble, lsutil.QuotePreferenceSingle:
+		langSvc.SetQuotePreference(lsutil.QuotePreference(value))
+		return nil
+	default:
+		return fmt.Errorf("%w: unknown quote preference %q", ErrClientError, value)
+	}
 }
 
 // toFormatCodeSettings resolves the API's formatting options against the server's

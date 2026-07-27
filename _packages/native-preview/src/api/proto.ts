@@ -91,6 +91,12 @@ export interface FormattingOptions {
  */
 export type OrganizeImportsMode = "all" | "sortAndCombine" | "removeUnused";
 
+/**
+ * The quotes a code fix writes a new string literal with.
+ * - `"auto"` infers them from the string literals already in the file.
+ */
+export type QuotePreference = "auto" | "double" | "single";
+
 export interface ImportSymbolActionRequest {
     kind: "importSymbol";
     symbol: number;

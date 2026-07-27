@@ -69,6 +69,7 @@ import type {
     ProfileResult,
     ProjectReference,
     ProjectResponse,
+    QuotePreference,
     SignatureResponse,
     SourceFileMetadata,
     SymbolResponse,
@@ -846,7 +847,13 @@ export class Project {
      * Returns the quick fixes available for the `[pos, end)` span. When
      * `errorCodes` is given, only fixes addressing those diagnostics are returned.
      */
-    async getCodeFixes(file: DocumentIdentifier, pos: number, end: number, errorCodes?: readonly number[]): Promise<readonly CodeFixAction[]> {
+    async getCodeFixes(
+        file: DocumentIdentifier,
+        pos: number,
+        end: number,
+        errorCodes?: readonly number[],
+        quotePreference?: QuotePreference,
+    ): Promise<readonly CodeFixAction[]> {
         const data = await this.client.apiRequest<CodeFixAction[]>("getCodeFixes", {
             snapshot: this.snapshotId,
             project: this.id,
@@ -854,6 +861,7 @@ export class Project {
             pos,
             end,
             ...(errorCodes !== undefined ? { errorCodes } : {}),
+            ...(quotePreference !== undefined ? { quotePreference } : {}),
         });
         return data ?? [];
     }
@@ -863,13 +871,19 @@ export class Project {
      * i.e. the "fix all" form of a quick fix. Throws when no provider owns the
      * fix id.
      */
-    async getCombinedCodeFix(file: DocumentIdentifier, fixId: string, options?: FormattingOptions): Promise<CombinedCodeActions> {
+    async getCombinedCodeFix(
+        file: DocumentIdentifier,
+        fixId: string,
+        options?: FormattingOptions,
+        quotePreference?: QuotePreference,
+    ): Promise<CombinedCodeActions> {
         return await this.client.apiRequest<CombinedCodeActions>("getCombinedCodeFix", {
             snapshot: this.snapshotId,
             project: this.id,
             file,
             fixId,
             ...(options !== undefined ? { options } : {}),
+            ...(quotePreference !== undefined ? { quotePreference } : {}),
         });
     }
 

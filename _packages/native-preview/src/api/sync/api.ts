@@ -77,6 +77,7 @@ import type {
     ProfileResult,
     ProjectReference,
     ProjectResponse,
+    QuotePreference,
     SignatureResponse,
     SourceFileMetadata,
     SymbolResponse,
@@ -861,8 +862,15 @@ export class Project {
     /**
      * Returns the quick fixes available for the `[pos, end)` span. When
      * `errorCodes` is given, only fixes addressing those diagnostics are returned.
+     * `quotePreference` decides the quotes a fix writes a new string literal with.
      */
-    getCodeFixes(file: DocumentIdentifier, pos: number, end: number, errorCodes?: readonly number[]): readonly CodeFixAction[] {
+    getCodeFixes(
+        file: DocumentIdentifier,
+        pos: number,
+        end: number,
+        errorCodes?: readonly number[],
+        quotePreference?: QuotePreference,
+    ): readonly CodeFixAction[] {
         const data = this.client.apiRequest<CodeFixAction[]>("getCodeFixes", {
             snapshot: this.snapshotId,
             project: this.id,
@@ -870,6 +878,7 @@ export class Project {
             pos,
             end,
             ...(errorCodes !== undefined ? { errorCodes } : {}),
+            ...(quotePreference !== undefined ? { quotePreference } : {}),
         });
         return data ?? [];
     }
@@ -879,13 +888,19 @@ export class Project {
      * i.e. the "fix all" form of a quick fix. Throws when no provider owns the
      * fix id.
      */
-    getCombinedCodeFix(file: DocumentIdentifier, fixId: string, options?: FormattingOptions): CombinedCodeActions {
+    getCombinedCodeFix(
+        file: DocumentIdentifier,
+        fixId: string,
+        options?: FormattingOptions,
+        quotePreference?: QuotePreference,
+    ): CombinedCodeActions {
         return this.client.apiRequest<CombinedCodeActions>("getCombinedCodeFix", {
             snapshot: this.snapshotId,
             project: this.id,
             file,
             fixId,
             ...(options !== undefined ? { options } : {}),
+            ...(quotePreference !== undefined ? { quotePreference } : {}),
         });
     }
 
