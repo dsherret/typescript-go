@@ -12,9 +12,15 @@ export interface CompilerOptions {
     allowArbitraryExtensions?: boolean;
     allowImportingTsExtensions?: boolean;
     allowNonTsExtensions?: boolean;
+    // TypeScript 7 removed only the `false` value of this option, of alwaysStrict
+    // and of esModuleInterop; the option itself is still read, and setting it to
+    // false produces a removed-option diagnostic rather than being unrepresentable.
+    // See the removed-option block in internal/compiler/program.go.
+    allowSyntheticDefaultImports?: boolean;
     allowUmdGlobalAccess?: boolean;
     allowUnreachableCode?: boolean;
     allowUnusedLabels?: boolean;
+    alwaysStrict?: boolean;
     assumeChangesOnlyAffectDirectDependencies?: boolean;
     checkJs?: boolean;
     customConditions?: string[];
@@ -31,6 +37,7 @@ export interface CompilerOptions {
     disableSolutionSearching?: boolean;
     disableReferencedProjectLoad?: boolean;
     erasableSyntaxOnly?: boolean;
+    esModuleInterop?: boolean;
     exactOptionalPropertyTypes?: boolean;
     experimentalDecorators?: boolean;
     forceConsistentCasingInFileNames?: boolean;
