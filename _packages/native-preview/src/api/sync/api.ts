@@ -29,8 +29,8 @@ import {
     type Node,
     type Path,
     type SourceFile,
-    type SynthesizedComment,
     type SyntaxKind,
+    type SynthesizedComment,
     type TypeNode,
     unescapeLeadingUnderscores,
 } from "../../ast/index.ts";
@@ -58,21 +58,21 @@ import {
     toPath,
 } from "../path.ts";
 import type {
+    CodeFixAction,
+    CombinedCodeActions,
     CompilerOptions,
     CompletionInfoResponse,
     DocumentIdentifier,
     DocumentPosition,
-    ImportAdderActionRequest,
-    ImportSymbolActionRequest,
-    CodeFixAction,
-    CombinedCodeActions,
     FileSpan,
     FileTextEdits,
     FormattingOptions,
-    OrganizeImportsMode,
+    ImportAdderActionRequest,
+    ImportSymbolActionRequest,
     IndexInfoResponse,
     InitializeResponse,
     LSPUpdateSnapshotParams,
+    OrganizeImportsMode,
     ParsedCommandLine,
     ProfileResult,
     ProjectReference,
@@ -2040,8 +2040,7 @@ function collectSyntheticComments(nodeIndices: Map<Node, number>) {
     const result: { node: number; leading?: SynthesizedComment[] | undefined; trailing?: SynthesizedComment[] | undefined; }[] = [];
     for (const [node, index] of nodeIndices) {
         const emitNode = getEmitNode(node);
-        if (emitNode?.leadingComments?.length || emitNode?.trailingComments?.length)
-            result.push({ node: index, leading: emitNode.leadingComments, trailing: emitNode.trailingComments });
+        if (emitNode?.leadingComments?.length || emitNode?.trailingComments?.length) result.push({ node: index, leading: emitNode.leadingComments, trailing: emitNode.trailingComments });
     }
     return result;
 }

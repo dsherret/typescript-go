@@ -258,7 +258,11 @@ import type {
     YieldExpression,
 } from "./ast.ts";
 import { getTokenPosOfNode } from "./astnav.ts";
-import { getChildren, getFirstToken, getLastToken } from "./children.ts";
+import {
+    getChildren,
+    getFirstToken,
+    getLastToken,
+} from "./children.ts";
 import { cloneSourceFileData } from "./utils.ts";
 import {
     forEachChildOfJSDocParameterTag,

@@ -139,8 +139,7 @@ function encodeFileReferences(refs: readonly FileReference[] | undefined, writer
  */
 export function rootedFileName(fileName: string): string {
     const normalized = fileName.replaceAll("\\", "/");
-    if (normalized.startsWith("/") || /^[a-zA-Z]:\//.test(normalized) || /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(normalized))
-        return normalized;
+    if (normalized.startsWith("/") || /^[a-zA-Z]:\//.test(normalized) || /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(normalized)) return normalized;
     return "/" + normalized;
 }
 

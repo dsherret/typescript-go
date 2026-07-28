@@ -12,11 +12,18 @@
  * synthesized here must be the *same objects* on every call.
  */
 import { SyntaxKind } from "#enums/syntaxKind";
+import {
+    type Node,
+    type NodeArray,
+    type SourceFile,
+} from "./ast.ts";
 import { createToken } from "./factory.generated.ts";
-import { type Node, type NodeArray, type SourceFile } from "./ast.ts";
-import { createScanner, type Scanner } from "./scanner.ts";
+import {
+    createScanner,
+    type Scanner,
+} from "./scanner.ts";
 
-type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+type Mutable<T> = { -readonly [K in keyof T]: T[K]; };
 
 /** Per-source-file scanner, paired with the file's shared token cache. */
 interface FileCache {
@@ -33,8 +40,7 @@ const childrenCache = new WeakMap<Node, Node[]>();
  */
 export function getChildren(node: Node, sourceFile: SourceFile = node.getSourceFile()): Node[] {
     const cached = childrenCache.get(node);
-    if (cached !== undefined)
-        return cached;
+    if (cached !== undefined) return cached;
 
     // Tokens and identifiers have no children in the classic services layer.
     if (node.kind <= SyntaxKind.LastToken) {
@@ -72,8 +78,7 @@ export function getChildren(node: Node, sourceFile: SourceFile = node.getSourceF
     // children, but classic lists them first, before the node's own text.
     const jsDoc = node.jsDoc;
     if (jsDoc !== undefined) {
-        for (const doc of jsDoc)
-            visitNode(doc);
+        for (const doc of jsDoc) visitNode(doc);
         pos = node.pos;
     }
 
@@ -102,8 +107,7 @@ export function getChildren(node: Node, sourceFile: SourceFile = node.getSourceF
 export function getFirstToken(node: Node, sourceFile: SourceFile = node.getSourceFile()): Node | undefined {
     const children = getChildren(node, sourceFile);
     const child = children.find(kid => kid.kind < SyntaxKind.FirstJSDocNode || kid.kind > SyntaxKind.LastJSDocNode);
-    if (child === undefined)
-        return undefined;
+    if (child === undefined) return undefined;
     return child.kind <= SyntaxKind.LastToken ? child : getFirstToken(child, sourceFile);
 }
 
@@ -111,8 +115,7 @@ export function getFirstToken(node: Node, sourceFile: SourceFile = node.getSourc
 export function getLastToken(node: Node, sourceFile: SourceFile = node.getSourceFile()): Node | undefined {
     const children = getChildren(node, sourceFile);
     const child = children[children.length - 1];
-    if (child === undefined)
-        return undefined;
+    if (child === undefined) return undefined;
     // Zero-width children count: the last token of a file with no trailing
     // newline is its empty EndOfFileToken, which is what classic returns.
     return child.kind <= SyntaxKind.LastToken ? child : getLastToken(child, sourceFile);
@@ -169,13 +172,13 @@ function addSyntheticTokens(children: Node[], cache: FileCache, pos: number, end
             if (kind === SyntaxKind.LessThanSlashToken) {
                 children.push(getOrCreateToken(cache, SyntaxKind.LessThanToken, pos, pos + 1, parent));
                 children.push(getOrCreateToken(cache, SyntaxKind.SlashToken, pos + 1, tokenEnd, parent));
-            } else {
+            }
+            else {
                 children.push(getOrCreateToken(cache, kind, pos, tokenEnd, parent));
             }
         }
         pos = tokenEnd;
-        if (kind === SyntaxKind.EndOfFile)
-            break;
+        if (kind === SyntaxKind.EndOfFile) break;
     }
 }
 
@@ -183,8 +186,7 @@ function addSyntheticTokens(children: Node[], cache: FileCache, pos: number, end
 function getOrCreateToken(cache: FileCache, kind: SyntaxKind, pos: number, end: number, parent: Node): Node {
     const key = `${pos}_${end}`;
     const existing = cache.tokens.get(key);
-    if (existing !== undefined)
-        return existing;
+    if (existing !== undefined) return existing;
 
     const token = createToken(kind as never) as unknown as Mutable<Node>;
     token.pos = pos;

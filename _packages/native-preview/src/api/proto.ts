@@ -1,6 +1,6 @@
 import type { CheckFlags } from "#enums/checkFlags";
-import type { DiagnosticCategory } from "#enums/diagnosticCategory";
 import type { CompletionItemKind } from "#enums/completionItemKind";
+import type { DiagnosticCategory } from "#enums/diagnosticCategory";
 import type { ModuleKind } from "#enums/moduleKind";
 import type {
     __String,

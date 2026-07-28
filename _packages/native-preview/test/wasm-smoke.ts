@@ -4,17 +4,19 @@
 import { SyntaxKind } from "@typescript/native-preview/unstable/ast";
 import { createVirtualFileSystem } from "@typescript/native-preview/unstable/fs";
 import assert from "node:assert";
-import { fileURLToPath } from "node:url";
-import { createWasmAPI } from "../src/api/wasm/node.ts";
+import { readFileSync } from "node:fs";
+import { createWasmAPI } from "../src/api/wasm/api.ts";
 
-const wasmPath = fileURLToPath(new URL("../dist/typescript.wasm", import.meta.url));
+// The package no longer reads the module itself: where it comes from is the
+// host's decision, so a Node host reads the bytes and hands them over.
+const wasm = readFileSync(new URL("../dist/typescript.wasm", import.meta.url));
 
 const files = {
     "/tsconfig.json": JSON.stringify({ compilerOptions: { strict: true } }),
     "/src/index.ts": `export const x: number = 1;\nexport const y = x + 2;\nexport function add(a: number, b: number) { return a + b; }\n`,
 };
 
-const api = createWasmAPI({ wasm: wasmPath, cwd: "/", fs: createVirtualFileSystem(files) });
+const api = createWasmAPI({ wasm, cwd: "/", fs: createVirtualFileSystem(files) });
 
 const snapshot = api.updateSnapshot({ openProject: "/tsconfig.json" });
 const project = snapshot.getProject("/tsconfig.json");

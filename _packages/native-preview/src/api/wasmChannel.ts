@@ -115,7 +115,8 @@ export class WasmChannel implements RpcChannel {
                 const result = callback ? callback(name, arg) : "";
                 this.callbackResult = result.length ? this.encoder.encode(result) : EMPTY;
                 return this.callbackResult.length;
-            } catch (error) {
+            }
+            catch (error) {
                 this.callbackResult = this.encoder.encode(describeError(error));
                 return HOST_ERROR_FLAG | this.callbackResult.length;
             }
@@ -130,7 +131,8 @@ export class WasmChannel implements RpcChannel {
                 if (length > 0) {
                     this.view(destPtr, length).set(result.subarray(0, length));
                 }
-            } catch {
+            }
+            catch {
                 // Nowhere to report to: read_result has no return value, and
                 // throwing would kill the module. Go sees zeroed bytes and fails
                 // to decode them, which surfaces as a request error.
@@ -209,7 +211,8 @@ export class WasmChannel implements RpcChannel {
                 throw new Error(this.decoder.decode(response) || "tsgo-wasm request failed");
             }
             return response;
-        } finally {
+        }
+        finally {
             this.inRequest = false;
         }
     }
@@ -235,7 +238,8 @@ function describeError(error: unknown): string {
     }
     try {
         return String(error);
-    } catch {
+    }
+    catch {
         return "unknown host callback error";
     }
 }
