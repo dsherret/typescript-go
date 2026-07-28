@@ -30,7 +30,21 @@ type RenameInfo struct {
 	NewFileName           string
 }
 
-func (l *LanguageService) ProvideRename(ctx context.Context, params *lsproto.RenameParams, orchestrator CrossProjectOrchestrator) (lsproto.WorkspaceEditOrNull, error) {
+// RenameOptions distinguishes rename's two consumers, which want different
+// answers for the same symbol.
+type RenameOptions struct {
+	// ApplyEditorEligibilityChecks refuses a rename that an editor has no business
+	// offering, because the user cannot meaningfully accept it: symbols owned by the
+	// standard library or by a package under node_modules. Strada scopes these checks
+	// to `getRenameInfo`, which only `prepareRename` consults; `findRenameLocations`
+	// applies none of them, so a programmatic caller that owns every file in its
+	// program - the API's model - can rename across those boundaries. An LSP client
+	// may issue a rename without a prepareRename first, so the server asks for the
+	// checks here as well.
+	ApplyEditorEligibilityChecks bool
+}
+
+func (l *LanguageService) ProvideRename(ctx context.Context, params *lsproto.RenameParams, orchestrator CrossProjectOrchestrator, options RenameOptions) (lsproto.WorkspaceEditOrNull, error) {
 	return handleCrossProject(
 		l,
 		ctx,
@@ -40,10 +54,12 @@ func (l *LanguageService) ProvideRename(ctx context.Context, params *lsproto.Ren
 		combineRenameResponse,
 		true,  /*isRename*/
 		false, /*implementations*/
-		symbolEntryTransformOptions{},
+		symbolEntryTransformOptions{rename: options},
 	)
 }
 
+// GetRenameInfo backs `textDocument/prepareRename`, so it always reports the
+// editor's view of whether a symbol may be renamed.
 func (l *LanguageService) GetRenameInfo(ctx context.Context, newName string, documentURI lsproto.DocumentUri, position lsproto.Position) RenameInfo {
 	program, sourceFile := l.getProgramAndFile(documentURI)
 	pos := int(l.converters.LineAndCharacterToPosition(sourceFile, position))
@@ -52,7 +68,7 @@ func (l *LanguageService) GetRenameInfo(ctx context.Context, newName string, doc
 	node = getAdjustedLocation(node, true /*forRename*/, sourceFile)
 
 	if nodeIsEligibleForRename(node) {
-		if renameInfo, ok := l.getRenameInfoForNode(ctx, newName, node, sourceFile, program); ok {
+		if renameInfo, ok := l.getRenameInfoForNode(ctx, newName, node, sourceFile, program, RenameOptions{ApplyEditorEligibilityChecks: true}); ok {
 			return renameInfo
 		}
 	}
@@ -66,11 +82,12 @@ func (l *LanguageService) symbolAndEntriesToRename(ctx context.Context, params *
 
 	program := l.GetProgram()
 
-	// Defense-in-depth: validate rename eligibility even if the client skipped prepareRename.
-	// Use getRenameInfoForNode directly with the already-resolved node to avoid
+	// Re-validate the node, since a caller that asked for the editor's eligibility
+	// checks may have skipped prepareRename and so never seen them. Use
+	// getRenameInfoForNode directly with the already-resolved node to avoid
 	// re-resolving the position and polluting state baselines.
 	sourceFile := ast.GetSourceFileOfNode(data.OriginalNode)
-	if info, ok := l.getRenameInfoForNode(ctx, params.NewName, data.OriginalNode, sourceFile, program); !ok || !info.CanRename {
+	if info, ok := l.getRenameInfoForNode(ctx, params.NewName, data.OriginalNode, sourceFile, program, options.rename); !ok || !info.CanRename {
 		return lsproto.WorkspaceEditOrNull{}, nil
 	}
 
@@ -101,7 +118,7 @@ func (l *LanguageService) symbolAndEntriesToRename(ctx context.Context, params *
 }
 
 // getRenameInfoForNode performs detailed validation for a rename operation on a specific node.
-func (l *LanguageService) getRenameInfoForNode(ctx context.Context, newName string, node *ast.Node, sourceFile *ast.SourceFile, program *compiler.Program) (RenameInfo, bool) {
+func (l *LanguageService) getRenameInfoForNode(ctx context.Context, newName string, node *ast.Node, sourceFile *ast.SourceFile, program *compiler.Program, options RenameOptions) (RenameInfo, bool) {
 	ch, done := program.GetTypeChecker(ctx)
 	defer done()
 
@@ -128,8 +145,10 @@ func (l *LanguageService) getRenameInfoForNode(ctx context.Context, newName stri
 		return RenameInfo{}, false
 	}
 
-	if msg := l.renameBlockedReason(sourceFile, node, symbol, ch, program); msg != nil {
-		return getRenameInfoError(ctx, msg), true
+	if options.ApplyEditorEligibilityChecks {
+		if msg := l.renameBlockedReason(sourceFile, node, symbol, ch, program); msg != nil {
+			return getRenameInfoError(ctx, msg), true
+		}
 	}
 
 	if ast.IsStringLiteralLike(node) && ast.TryGetImportFromModuleSpecifier(node) != nil {

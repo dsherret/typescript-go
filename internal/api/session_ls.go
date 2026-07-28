@@ -95,12 +95,15 @@ func (s *Session) handleRename(ctx context.Context, params *RenameParams) ([]*Fi
 	}
 
 	// A nil orchestrator selects the single-project path: renames are resolved
-	// against this project's program only, which is the API's model.
+	// against this project's program only, which is the API's model. Zero
+	// RenameOptions leave off the editor's eligibility checks, matching
+	// findRenameLocations rather than getRenameInfo: this caller owns every file
+	// in its program, including anything it chose to place under node_modules.
 	response, err := setup.langSvc.ProvideRename(ctx, &lsproto.RenameParams{
 		TextDocument: lsproto.TextDocumentIdentifier{Uri: setup.documentURI},
 		Position:     setup.toLSPPosition(params.Position),
 		NewName:      params.NewName,
-	}, nil)
+	}, nil, ls.RenameOptions{})
 	if err != nil {
 		return nil, err
 	}

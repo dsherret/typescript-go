@@ -617,6 +617,9 @@ type symbolEntryTransformOptions struct {
 	requireLocationsResult bool
 	// Omit node(s) containing the original position.
 	dropOriginNodes bool
+	// Read only by the rename transform, which shares this struct with every other
+	// transform because they all reach it through one callback signature.
+	rename RenameOptions
 }
 
 type SymbolAndEntriesData struct {
@@ -679,6 +682,7 @@ func (l *LanguageService) getSymbolAndEntries(
 	implementations bool,
 ) []*SymbolAndEntries {
 	var options refOptions
+	sourceFiles := program.GetSourceFiles()
 	if !isRename {
 		options.use = referenceUseReferences
 		if implementations {
@@ -687,8 +691,14 @@ func (l *LanguageService) getSymbolAndEntries(
 	} else {
 		options.use = referenceUseRename
 		options.useAliasesForRename = l.UserPreferences().UseAliasesForRename.IsTrueOrUnknown()
+		// Nobody wants a rename to rewrite the standard library, so keep it out of the
+		// search rather than refusing the rename: the caller's own references are
+		// still renamed. Strada excludes it from findRenameLocations the same way.
+		sourceFiles = core.Filter(sourceFiles, func(file *ast.SourceFile) bool {
+			return !program.IsSourceFileDefaultLibrary(file.Path())
+		})
 	}
-	return l.getReferencedSymbolsForNode(ctx, position, node, program, program.GetSourceFiles(), options)
+	return l.getReferencedSymbolsForNode(ctx, position, node, program, sourceFiles, options)
 }
 
 func (l *LanguageService) ProvideReferences(ctx context.Context, params *lsproto.ReferenceParams, orchestrator CrossProjectOrchestrator) (lsproto.ReferencesResponse, error) {
