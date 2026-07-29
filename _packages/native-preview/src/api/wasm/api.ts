@@ -48,7 +48,7 @@ export type WasmSource = WebAssembly.Module | Uint8Array | ArrayBuffer;
 
 export interface WasmApiOptions {
     /**
-     * The reactor module. Defaults to `typescript.wasm` beside this module, or
+     * The reactor module. Defaults to `typescript.wasm.gz` beside this module, or
      * to whatever {@link setDefaultWasmModule} was last given.
      */
     wasm?: WasmSource;
@@ -147,14 +147,20 @@ function compileModule(wasm: WasmSource): WebAssembly.Module {
 }
 
 /**
- * Reads `typescript.wasm` from beside this module.
+ * Reads `typescript.wasm.gz` from beside this module and unwraps it.
  *
  * Two locations, because this module is shipped both as itself and inlined into
  * a bundle: the copy in this package's `dist`, and a copy placed next to
  * whatever bundle inlined it — which is what a bundler that rewrote
- * `import.meta.url` will find.
+ * `import.meta.url` will find. An uncompressed `typescript.wasm` is accepted in
+ * either place as well, so that a build which cannot carry a `.gz` through can
+ * drop the unwrapped file in and need no other change.
  */
 function readDefaultWasmBytes(): Uint8Array {
+    return gunzipIfCompressed(readDefaultWasmFile());
+}
+
+function readDefaultWasmFile(): Uint8Array {
     const read = findSyncFileReader();
     if (read === undefined) {
         throw new Error(
@@ -163,7 +169,14 @@ function readDefaultWasmBytes(): Uint8Array {
         );
     }
     let firstError: unknown;
-    for (const candidate of ["./typescript.wasm", "../../../dist/typescript.wasm"]) {
+    for (
+        const candidate of [
+            "./typescript.wasm.gz",
+            "../../../dist/typescript.wasm.gz",
+            "./typescript.wasm",
+            "../../../dist/typescript.wasm",
+        ]
+    ) {
         try {
             return read(new URL(candidate, import.meta.url));
         }
@@ -172,6 +185,29 @@ function readDefaultWasmBytes(): Uint8Array {
         }
     }
     throw firstError;
+}
+
+/**
+ * The reactor's bytes, gunzipped if that is what was read.
+ *
+ * Decided by the gzip magic number rather than by the file name, because the
+ * name is whatever survived the host's build: a bundler that copies assets by
+ * extension, a `.gz` served already decompressed, or the unwrapped file dropped
+ * in by hand all have to land on the same answer.
+ */
+function gunzipIfCompressed(bytes: Uint8Array): Uint8Array {
+    if (!(bytes[0] === 0x1f && bytes[1] === 0x8b)) {
+        return bytes;
+    }
+    const gunzipSync = findSyncGunzip();
+    if (gunzipSync === undefined) {
+        throw new Error(
+            "The TypeScript compiler is shipped gzipped and this host offers no synchronous gunzip. "
+                + "Decompress typescript.wasm.gz and place the result beside it as typescript.wasm, "
+                + "or compile the module yourself and pass it to `initializeWasm`.",
+        );
+    }
+    return gunzipSync(bytes);
 }
 
 /**
@@ -189,12 +225,23 @@ function findSyncFileReader(): ((url: URL) => Uint8Array) | undefined {
     if (typeof deno?.readFileSync === "function") {
         return url => deno.readFileSync!(url);
     }
-    const nodeFs = requireNodeFs() ?? (globalThis as { process?: { getBuiltinModule?(id: string): unknown; }; }).process?.getBuiltinModule?.("node:fs");
+    const nodeFs = requireBuiltin("fs") ?? getBuiltinModule("node:fs");
     const readFileSync = (nodeFs as { readFileSync?(path: URL): Uint8Array; } | undefined)?.readFileSync;
     return typeof readFileSync === "function" ? url => readFileSync(url) : undefined;
 }
 
-function requireNodeFs(): unknown {
+/**
+ * A synchronous gunzip, reached the same way the file reader is and for the same
+ * reason: `node:zlib` must not appear as an import in a browser bundle. Deno
+ * answers here too, through its `node:zlib`.
+ */
+function findSyncGunzip(): ((bytes: Uint8Array) => Uint8Array) | undefined {
+    const nodeZlib = requireBuiltin("zlib") ?? getBuiltinModule("node:zlib");
+    const gunzipSync = (nodeZlib as { gunzipSync?(bytes: Uint8Array): Uint8Array; } | undefined)?.gunzipSync;
+    return typeof gunzipSync === "function" ? bytes => gunzipSync(bytes) : undefined;
+}
+
+function requireBuiltin(name: string): unknown {
     // `require` exists only where a CommonJS bundle provides it; `typeof` on an
     // undeclared name is safe everywhere else.
     if (typeof require !== "function") {
@@ -204,10 +251,15 @@ function requireNodeFs(): unknown {
         // The specifier is assembled rather than written out so that a bundler
         // targeting the browser does not try to resolve it — the same trick
         // rollup's own CommonJS shims use.
-        return require("node" + ":fs");
+        return require("node" + ":" + name);
     }
     catch {
         // a bundler's `require` may refuse a built-in outright
         return undefined;
     }
+}
+
+/** The built-in module registry an ESM Node process has, and Deno with it. */
+function getBuiltinModule(id: string): unknown {
+    return (globalThis as { process?: { getBuiltinModule?(id: string): unknown; }; }).process?.getBuiltinModule?.(id);
 }
