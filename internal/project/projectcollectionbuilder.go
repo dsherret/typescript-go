@@ -205,6 +205,23 @@ func (b *ProjectCollectionBuilder) HandleAPIRequest(apiRequest *APISnapshotReque
 		}
 	}
 
+	// after the opens, so a project whose roots arrive with the request that opens it
+	// is built with them, and before the update below, so it is built only once
+	for configPath, change := range apiRequest.RootFiles {
+		entry, ok := b.configuredProjects.Load(configPath)
+		if !ok {
+			return fmt.Errorf("project not found for root file change: %s", configPath)
+		}
+		rootFiles := applyRootFileChange(b.apiState.rootFiles[configPath], change)
+		if b.apiState.rootFiles == nil {
+			b.apiState.rootFiles = make(map[tspath.Path][]string, len(apiRequest.RootFiles))
+		}
+		b.apiState.rootFiles[configPath] = rootFiles
+		entry.Change(func(p *Project) {
+			p.setAPIRootFiles(rootFiles)
+		})
+	}
+
 	for configPath := range b.apiState.openProjects {
 		if entry, ok := b.configuredProjects.Load(configPath); ok {
 			b.updateProgram(entry, logger)
@@ -220,6 +237,9 @@ func (b *ProjectCollectionBuilder) HandleAPIRequest(apiRequest *APISnapshotReque
 	}
 
 	for projectPath := range projectsToClose {
+		// the roots go with the project: a client that opens it again is opening a
+		// project it has named nothing for yet
+		delete(b.apiState.rootFiles, projectPath)
 		if entry, ok := b.configuredProjects.Load(projectPath); ok {
 			b.deleteConfiguredProject(entry, logger)
 		}
@@ -249,6 +269,26 @@ func (b *ProjectCollectionBuilder) HandleAPIRequest(apiRequest *APISnapshotReque
 	}
 
 	return nil
+}
+
+// applyRootFileChange returns the project's API root files with change applied. The
+// result is always a new slice, because the one it derives from belongs to the snapshot
+// this one is being built from.
+//
+// Removals are applied first, so a name that is both removed and added ends up at the
+// end of the list where an addition belongs.
+func applyRootFileChange(rootFiles []string, change *APIRootFileChange) []string {
+	result := rootFiles
+	if len(change.Removed) > 0 {
+		removed := collections.NewSetFromItems(change.Removed...)
+		result = slices.DeleteFunc(slices.Clone(result), removed.Has)
+	}
+	if len(change.Added) > 0 {
+		result = slices.Concat(result, change.Added)
+	} else if len(change.Removed) == 0 {
+		result = slices.Clone(result)
+	}
+	return result
 }
 
 func (b *ProjectCollectionBuilder) DidChangeFiles(summary FileChangeSummary, logger *logging.LogTree) {

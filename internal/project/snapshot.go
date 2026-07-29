@@ -161,6 +161,17 @@ type APISnapshotRequest struct {
 	CloseProjects *collections.Set[tspath.Path]
 	OpenFiles     *collections.Set[lsproto.DocumentUri]
 	CloseFiles    *collections.Set[tspath.Path]
+	// RootFiles are changes to the root files API clients named for a project
+	// directly, keyed by config file path.
+	RootFiles map[tspath.Path]*APIRootFileChange
+}
+
+// APIRootFileChange is what an API client asked to change about the root files it named
+// for one project: absolute file names to append, in the order they should be appended,
+// and ones to drop.
+type APIRootFileChange struct {
+	Added   []string
+	Removed []string
 }
 
 type ProjectTreeRequest struct {

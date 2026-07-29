@@ -990,6 +990,20 @@ func (s *Session) handleUpdateSnapshot(ctx context.Context, params *UpdateSnapsh
 		closedFiles = append(closedFiles, path)
 	}
 
+	// Root files a client names for a project itself. These are absolute file names
+	// rather than documents: they never leave the server as anything else, and a URI
+	// round trip per file is what this exists to avoid paying.
+	for _, change := range params.RootFileChanges {
+		configPath := s.toPath(change.Project.ToAbsoluteFileName(s.projectSession.GetCurrentDirectory()))
+		if apiRequest.RootFiles == nil {
+			apiRequest.RootFiles = make(map[tspath.Path]*project.APIRootFileChange, len(params.RootFileChanges))
+		}
+		apiRequest.RootFiles[configPath] = &project.APIRootFileChange{
+			Added:   s.toAbsoluteFileNames(change.Added),
+			Removed: s.toAbsoluteFileNames(change.Removed),
+		}
+	}
+
 	// Even when nothing is opened or closed, APIUpdate ensures all projects and
 	// files opened by the API are up to date. For an API connected to an LSP server,
 	// this brings the API state up to date with the LSP state and ensures projects
@@ -1200,8 +1214,9 @@ func (s *Session) handleGetProjectRootFiles(ctx context.Context, params *GetProj
 	if err != nil {
 		return nil, err
 	}
-	// the project's command line rather than the program's, which is the one the
-	// project reports elsewhere and does not carry files the typings installer added
+	// the roots the project was asked to hold — its config's, then the ones the client
+	// named for it directly — rather than the program's, which also carries whatever
+	// the typings installer added
 	proj, err := sd.getProject(params.Project)
 	if err != nil {
 		return nil, err
@@ -1209,7 +1224,7 @@ func (s *Session) handleGetProjectRootFiles(ctx context.Context, params *GetProj
 	if proj.CommandLine == nil {
 		return nil, nil
 	}
-	return proj.CommandLine.FileNames(), nil
+	return proj.RootFileNames(), nil
 }
 
 // handleGetConfigFileNames returns tsconfig file names associated with the project's command line.
@@ -3637,6 +3652,16 @@ func formatSessionID(id uint64) string {
 // toPath converts a file name to a normalized path.
 func (s *Session) toPath(fileName string) tspath.Path {
 	return tspath.ToPath(fileName, s.projectSession.GetCurrentDirectory(), s.projectSession.FS().UseCaseSensitiveFileNames())
+}
+
+func (s *Session) toAbsoluteFileNames(fileNames []string) []string {
+	if len(fileNames) == 0 {
+		return nil
+	}
+	currentDirectory := s.projectSession.GetCurrentDirectory()
+	return core.Map(fileNames, func(fileName string) string {
+		return tspath.GetNormalizedAbsolutePath(fileName, currentDirectory)
+	})
 }
 
 // toFileChangeSummary converts API file changes to a project.FileChangeSummary.

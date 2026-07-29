@@ -34,96 +34,110 @@ func TestAddedRootsMatchAProjectOpenedWithThem(t *testing.T) {
 		t.Skip("bundled files are not embedded")
 	}
 
-	testCases := []struct {
-		name    string
-		initial map[string]string
-		added   []map[string]string
-		// reusesProgram is whether the last addition was made without rebuilding.
-		reusesProgram bool
-	}{
-		{
-			name:          "a file nothing was waiting for",
-			initial:       map[string]string{"/p/a.ts": `export const a = 1;`},
-			added:         []map[string]string{{"/p/b.ts": `export const b = 2;`}},
-			reusesProgram: true,
-		},
-		{
-			name:          "a file an import was waiting for",
-			initial:       map[string]string{"/p/a.ts": `import { b } from "./b"; export const a = b;`},
-			added:         []map[string]string{{"/p/b.ts": `export const b = 2;`}},
-			reusesProgram: false,
-		},
-		{
-			name:    "a file a triple slash reference was waiting for",
-			initial: map[string]string{"/p/a.ts": "/// <reference path=\"./b.ts\" />\nexport const a = 1;"},
-			added:   []map[string]string{{"/p/b.ts": `declare const b: number;`}},
-			// the reference probed for the file, so the addition has to be refused
-			reusesProgram: false,
-		},
-		{
-			name:          "a file that imports one already in the project",
-			initial:       map[string]string{"/p/a.ts": `export const a = 1;`},
-			added:         []map[string]string{{"/p/b.ts": `import { a } from "./a"; export const b = a;`}},
-			reusesProgram: true,
-		},
-		{
-			name:    "several files in a row, each importing the last",
-			initial: map[string]string{"/p/a.ts": `export const a = 1;`},
-			added: []map[string]string{
-				{"/p/b.ts": `import { a } from "./a"; export const b = a;`},
-				{"/p/c.ts": `import { b } from "./b"; export const c = b;`},
-				{"/p/d.ts": `import { c } from "./c"; export const d = c;`},
-			},
-			reusesProgram: true,
-		},
-		{
-			name:          "a declaration file beside a source file",
-			initial:       map[string]string{"/p/a.ts": `export const a = 1;`},
-			added:         []map[string]string{{"/p/a.d.ts": `export declare const a: number;`}},
-			reusesProgram: true,
-		},
-		{
-			name:          "a file in a directory the project has not seen",
-			initial:       map[string]string{"/p/a.ts": `export const a = 1;`},
-			added:         []map[string]string{{"/p/sub/b.ts": `export const b = 2;`}},
-			reusesProgram: true,
-		},
-		{
-			name:          "a file with an import that resolves to nothing",
-			initial:       map[string]string{"/p/a.ts": `export const a = 1;`},
-			added:         []map[string]string{{"/p/b.ts": `import { z } from "./z"; export const b = z;`}},
-			reusesProgram: true,
-		},
-	}
-
-	for _, testCase := range testCases {
+	for _, testCase := range addRootsTestCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			incremental := newAddRootsSession(t, testCase.initial)
-			defer incremental.close()
-			for _, batch := range testCase.added {
-				incremental.addRoots(t, batch)
-			}
-			assert.Equal(t, incremental.reusedProgram, testCase.reusesProgram, "reused the program")
-
-			all := map[string]string{}
-			for name, text := range testCase.initial {
-				all[name] = text
-			}
-			for _, batch := range testCase.added {
-				for name, text := range batch {
-					all[name] = text
-				}
-			}
-			// the same roots in the same order, since the order of the list is what
-			// decides the order of the files in the program
-			atOnce := newAddRootsSessionWithRoots(t, all, incremental.roots)
-			defer atOnce.close()
-
-			assert.Equal(t, explainProgram(incremental.program(t)), explainProgram(atOnce.program(t)), "explained files")
-			assert.Equal(t, programDiagnostics(t, incremental.program(t)), programDiagnostics(t, atOnce.program(t)), "diagnostics")
+			runAddRootsTestCase(t, testCase, newAddRootsSession, newAddRootsSessionWithRoots)
 		})
 	}
+}
+
+// addRootsTestCase is one shape a project can grow into, run once with the roots named
+// in the config and once with them named over the API — see TestAPIRootsMatchAProjectOpenedWithThem.
+type addRootsTestCase struct {
+	name    string
+	initial map[string]string
+	added   []map[string]string
+	// reusesProgram is whether the last addition was made without rebuilding.
+	reusesProgram bool
+}
+
+var addRootsTestCases = []addRootsTestCase{
+	{
+		name:          "a file nothing was waiting for",
+		initial:       map[string]string{"/p/a.ts": `export const a = 1;`},
+		added:         []map[string]string{{"/p/b.ts": `export const b = 2;`}},
+		reusesProgram: true,
+	},
+	{
+		name:          "a file an import was waiting for",
+		initial:       map[string]string{"/p/a.ts": `import { b } from "./b"; export const a = b;`},
+		added:         []map[string]string{{"/p/b.ts": `export const b = 2;`}},
+		reusesProgram: false,
+	},
+	{
+		name:    "a file a triple slash reference was waiting for",
+		initial: map[string]string{"/p/a.ts": "/// <reference path=\"./b.ts\" />\nexport const a = 1;"},
+		added:   []map[string]string{{"/p/b.ts": `declare const b: number;`}},
+		// the reference probed for the file, so the addition has to be refused
+		reusesProgram: false,
+	},
+	{
+		name:          "a file that imports one already in the project",
+		initial:       map[string]string{"/p/a.ts": `export const a = 1;`},
+		added:         []map[string]string{{"/p/b.ts": `import { a } from "./a"; export const b = a;`}},
+		reusesProgram: true,
+	},
+	{
+		name:    "several files in a row, each importing the last",
+		initial: map[string]string{"/p/a.ts": `export const a = 1;`},
+		added: []map[string]string{
+			{"/p/b.ts": `import { a } from "./a"; export const b = a;`},
+			{"/p/c.ts": `import { b } from "./b"; export const c = b;`},
+			{"/p/d.ts": `import { c } from "./c"; export const d = c;`},
+		},
+		reusesProgram: true,
+	},
+	{
+		name:          "a declaration file beside a source file",
+		initial:       map[string]string{"/p/a.ts": `export const a = 1;`},
+		added:         []map[string]string{{"/p/a.d.ts": `export declare const a: number;`}},
+		reusesProgram: true,
+	},
+	{
+		name:          "a file in a directory the project has not seen",
+		initial:       map[string]string{"/p/a.ts": `export const a = 1;`},
+		added:         []map[string]string{{"/p/sub/b.ts": `export const b = 2;`}},
+		reusesProgram: true,
+	},
+	{
+		name:          "a file with an import that resolves to nothing",
+		initial:       map[string]string{"/p/a.ts": `export const a = 1;`},
+		added:         []map[string]string{{"/p/b.ts": `import { z } from "./z"; export const b = z;`}},
+		reusesProgram: true,
+	},
+}
+
+func runAddRootsTestCase(
+	t *testing.T,
+	testCase addRootsTestCase,
+	newSession func(*testing.T, map[string]string) *addRootsSession,
+	newSessionWithRoots func(*testing.T, map[string]string, []string) *addRootsSession,
+) {
+	t.Helper()
+	incremental := newSession(t, testCase.initial)
+	defer incremental.close()
+	for _, batch := range testCase.added {
+		incremental.addRoots(t, batch)
+	}
+	assert.Equal(t, incremental.reusedProgram, testCase.reusesProgram, "reused the program")
+
+	all := map[string]string{}
+	for name, text := range testCase.initial {
+		all[name] = text
+	}
+	for _, batch := range testCase.added {
+		for name, text := range batch {
+			all[name] = text
+		}
+	}
+	// the same roots in the same order, since the order of the list is what
+	// decides the order of the files in the program
+	atOnce := newSessionWithRoots(t, all, incremental.roots)
+	defer atOnce.close()
+
+	assert.Equal(t, explainProgram(incremental.program(t)), explainProgram(atOnce.program(t)), "explained files")
+	assert.Equal(t, programDiagnostics(t, incremental.program(t)), programDiagnostics(t, atOnce.program(t)), "diagnostics")
 }
 
 // TestAddedRootWithAnEditedFile is the shape ts-morph's create-and-manipulate loop
@@ -179,32 +193,53 @@ func TestAddedRootWithADeletedFile(t *testing.T) {
 }
 
 type addRootsSession struct {
-	session       *Session
-	project       *project.Session
-	utils         *projecttestutil.SessionUtils
-	roots         []string
+	session *Session
+	project *project.Session
+	utils   *projecttestutil.SessionUtils
+	roots   []string
+	// rootsViaAPI drives the session the way a client that names root files for the
+	// project itself does, rather than by rewriting the config — see
+	// TestAPIRootsMatchAProjectOpenedWithThem.
+	rootsViaAPI   bool
+	pendingRoots  []string
+	removedRoots  []string
 	reusedProgram bool
 	lastReasons   map[tspath.Path][]*compiler.FileIncludeReason
 }
 
 func newAddRootsSession(t *testing.T, files map[string]string) *addRootsSession {
 	t.Helper()
-	roots := make([]string, 0, len(files))
-	for name := range files {
-		roots = append(roots, name)
-	}
-	slices.Sort(roots)
-	return newAddRootsSessionWithRoots(t, files, roots)
+	return newAddRootsSessionWithRoots(t, files, sortedRootNames(files))
 }
 
 func newAddRootsSessionWithRoots(t *testing.T, files map[string]string, roots []string) *addRootsSession {
+	t.Helper()
+	return newRootsSession(t, files, roots, false /*viaAPI*/)
+}
+
+func newAPIRootsSession(t *testing.T, files map[string]string) *addRootsSession {
+	t.Helper()
+	return newAPIRootsSessionWithRoots(t, files, sortedRootNames(files))
+}
+
+func newAPIRootsSessionWithRoots(t *testing.T, files map[string]string, roots []string) *addRootsSession {
+	t.Helper()
+	return newRootsSession(t, files, roots, true /*viaAPI*/)
+}
+
+func newRootsSession(t *testing.T, files map[string]string, roots []string, viaAPI bool) *addRootsSession {
 	t.Helper()
 	initial := map[string]any{}
 	for name, text := range files {
 		initial[name] = text
 	}
-	s := &addRootsSession{roots: slices.Clone(roots)}
-	initial[addRootsConfigFileName] = addRootsConfigText(s.roots)
+	s := &addRootsSession{roots: slices.Clone(roots), rootsViaAPI: viaAPI}
+	if viaAPI {
+		initial[addRootsConfigFileName] = addRootsConfigText(nil)
+		s.pendingRoots = slices.Clone(roots)
+	} else {
+		initial[addRootsConfigFileName] = addRootsConfigText(s.roots)
+	}
 	s.project, s.utils = projecttestutil.SetupWithOptions(initial, &project.SessionOptions{
 		CurrentDirectory:   "/",
 		DefaultLibraryPath: bundled.LibPath(),
@@ -215,7 +250,21 @@ func newAddRootsSessionWithRoots(t *testing.T, files map[string]string, roots []
 	return s
 }
 
+func sortedRootNames(files map[string]string) []string {
+	roots := make([]string, 0, len(files))
+	for name := range files {
+		roots = append(roots, name)
+	}
+	slices.Sort(roots)
+	return roots
+}
+
 func addRootsConfigText(roots []string) string {
+	if roots == nil {
+		// present and empty rather than absent: a config with neither `files` nor
+		// `include` globs everything it can reach
+		roots = []string{}
+	}
 	text, _ := json.Marshal(map[string]any{
 		"compilerOptions": map[string]any{"allowJs": true},
 		"files":           roots,
@@ -243,24 +292,40 @@ func (s *addRootsSession) addRoots(t *testing.T, files map[string]string, alsoCh
 	created := make([]string, 0, len(files))
 	for name, text := range files {
 		s.write(name, text)
-		s.roots = append(s.roots, name)
 		created = append(created, name)
 	}
 	slices.Sort(created)
-	s.writeConfig()
+	s.roots = append(s.roots, created...)
+	changed := alsoChanged
+	if s.rootsViaAPI {
+		s.pendingRoots = append(s.pendingRoots, created...)
+	} else {
+		s.writeConfig()
+		changed = append([]string{addRootsConfigFileName}, alsoChanged...)
+	}
 	s.update(t, &APIFileChanges{
 		Created: identifiers(created...),
-		Changed: identifiers(append([]string{addRootsConfigFileName}, alsoChanged...)...),
+		Changed: identifiers(changed...),
 	})
 }
 
 func (s *addRootsSession) update(t *testing.T, changes *APIFileChanges) {
 	t.Helper()
 	before := s.lastReasons
-	_, err := s.session.handleUpdateSnapshot(context.Background(), &UpdateSnapshotParams{
+	params := &UpdateSnapshotParams{
 		FileChanges:  changes,
 		OpenProjects: []DocumentIdentifier{{FileName: addRootsConfigFileName}},
-	})
+	}
+	if len(s.pendingRoots) > 0 || len(s.removedRoots) > 0 {
+		params.RootFileChanges = []APIProjectRootFileChanges{{
+			Project: DocumentIdentifier{FileName: addRootsConfigFileName},
+			Added:   s.pendingRoots,
+			Removed: s.removedRoots,
+		}}
+		s.pendingRoots = nil
+		s.removedRoots = nil
+	}
+	_, err := s.session.handleUpdateSnapshot(context.Background(), params)
 	assert.NilError(t, err)
 	reasons := s.program(t).GetIncludeReasons()
 	// a program that was added to carries the reasons the one before it worked out;

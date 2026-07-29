@@ -73,6 +73,11 @@ type Project struct {
 	CommandLine                     *tsoptions.ParsedCommandLine
 	commandLineWithTypingsFiles     *tsoptions.ParsedCommandLine
 	commandLineWithTypingsFilesOnce sync.Once
+	// apiRootFiles are root file names an API client named for this project directly
+	// rather than through its config, in the order they were added.
+	apiRootFiles                    []string
+	commandLineWithAPIRootFiles     *tsoptions.ParsedCommandLine
+	commandLineWithAPIRootFilesOnce sync.Once
 	Program                         *compiler.Program
 	// The kind of update that was performed on the program last time it was updated.
 	ProgramUpdateKind ProgramUpdateKind
@@ -260,6 +265,8 @@ func (p *Project) Clone() *Project {
 		host:                        p.host,
 		CommandLine:                 p.CommandLine,
 		commandLineWithTypingsFiles: p.commandLineWithTypingsFiles,
+		apiRootFiles:                p.apiRootFiles,
+		commandLineWithAPIRootFiles: p.commandLineWithAPIRootFiles,
 		Program:                     p.Program,
 		ProgramUpdateKind:           ProgramUpdateKindNone,
 		ProgramLastUpdate:           p.ProgramLastUpdate,
@@ -278,10 +285,15 @@ func (p *Project) Clone() *Project {
 // SetCommandLine reassigns the project's command line and resets all state derived
 // from it. The project is marked dirty, since the program was built from the command
 // line it replaces. It also resets:
-//   - the memoized command line augmented with typings files (and its sync.Once, so
-//     the augmented command line is rebuilt from the new command line on next access);
+//   - the memoized command lines augmented with typings files and with API root files
+//     (and their sync.Onces, so both are rebuilt from the new command line on next
+//     access);
 //   - potentialProjectReferences, the pre-load placeholder derived from the old
 //     command line (always nil for inferred projects, which have no project references).
+//
+// The API root files themselves are deliberately kept: they belong to the project
+// rather than to its config, and rewriting the config is exactly what a client changing
+// a compiler option does.
 //
 // What changed about the files is left alone: the two are independent, and comparing
 // the command lines is how CreateProgram tells a root file added from anything else.
@@ -289,8 +301,49 @@ func (p *Project) SetCommandLine(commandLine *tsoptions.ParsedCommandLine) {
 	p.CommandLine = commandLine
 	p.commandLineWithTypingsFiles = nil
 	p.commandLineWithTypingsFilesOnce = sync.Once{}
+	p.commandLineWithAPIRootFiles = nil
+	p.commandLineWithAPIRootFilesOnce = sync.Once{}
 	p.potentialProjectReferences = nil
 	p.dirty = true
+}
+
+// RootFileNames are the root files the project was asked to hold: the ones its config
+// named, followed by the ones an API client named for it directly. Files the typings
+// installer added are left out, since those are the program's rather than the project's.
+func (p *Project) RootFileNames() []string {
+	if len(p.apiRootFiles) == 0 {
+		return p.CommandLine.FileNames()
+	}
+	return slices.Concat(p.CommandLine.FileNames(), p.apiRootFiles)
+}
+
+// setAPIRootFiles replaces the root files an API client named for this project. The
+// slice is taken rather than copied and must never be appended to in place: a snapshot
+// clones the map it came from, so the one behind this project is still holding it.
+func (p *Project) setAPIRootFiles(fileNames []string) {
+	p.apiRootFiles = fileNames
+	p.commandLineWithAPIRootFiles = nil
+	p.commandLineWithAPIRootFilesOnce = sync.Once{}
+	p.dirty = true
+}
+
+// effectiveCommandLine is the project's config command line with the root files nothing
+// in the config named appended: the typings installer's, then the ones an API client
+// named. The API roots go last because appending to the end of the list is the only
+// shape Program.AddRootFiles can extend, so a client adding a root is adding to the end.
+// (A typings file arriving after an API root therefore inserts in the middle and costs
+// one rebuild — correct, and rare enough to be worth the order.)
+func (p *Project) effectiveCommandLine() *tsoptions.ParsedCommandLine {
+	commandLine := p.getCommandLineWithTypingsFiles()
+	if len(p.apiRootFiles) == 0 {
+		return commandLine
+	}
+	p.commandLineWithAPIRootFilesOnce.Do(func() {
+		if p.commandLineWithAPIRootFiles == nil {
+			p.commandLineWithAPIRootFiles = commandLine.WithAdditionalRootFiles(p.apiRootFiles)
+		}
+	})
+	return p.commandLineWithAPIRootFiles
 }
 
 // getCommandLineWithTypingsFiles returns the command line augmented with typing files if ATA is enabled.
@@ -372,8 +425,8 @@ func (p *Project) CreateProgram() CreateProgramResult {
 		return newCheckerPool(p.host.sessionOptions.CheckerPoolOptions, program, p.log)
 	}
 
-	// Create the command line, potentially augmented with typing files
-	commandLine := p.getCommandLineWithTypingsFiles()
+	// Create the command line, potentially augmented with typing files and API root files
+	commandLine := p.effectiveCommandLine()
 
 	if p.dirtyFilesKnown && len(p.dirtyFiles) == 1 && p.Program != nil && p.Program.CommandLine() == commandLine {
 		var dirtyFile *ast.SourceFile

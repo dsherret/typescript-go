@@ -362,6 +362,21 @@ type UpdateSnapshotParams struct {
 	// CloseFiles lists files to release in the new snapshot. A file is only fully
 	// closed once every API client that opened it closes it.
 	CloseFiles []DocumentIdentifier `json:"closeFiles,omitempty"`
+	// RootFileChanges lists root files to add to or drop from projects the client
+	// names root files for itself rather than through a config.
+	RootFileChanges []APIProjectRootFileChanges `json:"rootFileChanges,omitempty"`
+}
+
+// APIProjectRootFileChanges names root files for a project directly, rather than
+// through the project's config. They are appended to whatever the config resolved, and
+// persist across snapshots until the project is closed.
+type APIProjectRootFileChanges struct {
+	// Project is the project, named by the config file it was opened with.
+	Project DocumentIdentifier `json:"project"`
+	// Added lists root files to append, in the order they should be appended.
+	Added []string `json:"added,omitempty"`
+	// Removed lists root files to drop.
+	Removed []string `json:"removed,omitempty"`
 }
 
 // UpdateTemporarySnapshotParams are the parameters for creating a temporary
