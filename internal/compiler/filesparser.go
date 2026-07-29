@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -44,6 +45,11 @@ type parseTask struct {
 
 	loadedTask        *parseTask
 	allIncludeReasons []*FileIncludeReason
+
+	// existingFile is set when an incremental root addition reached a file the
+	// program already holds. Nothing about that file changes; only the reason the
+	// added root had for wanting it is new.
+	existingFile *ast.SourceFile
 }
 
 func (t *parseTask) FileName() string {
@@ -206,6 +212,9 @@ type filesParser struct {
 	wg             core.WorkGroup
 	taskDataByPath collections.SyncMap[tspath.Path, *parseTaskData]
 	maxDepth       int
+	// incremental is set when the result extends an existing program, whose slices
+	// must not be appended to in place.
+	incremental bool
 }
 
 var parseTaskDataPool = sync.Pool{
@@ -245,6 +254,9 @@ func (w *filesParser) parse(loader *fileLoader, tasks []*parseTask) {
 func (w *filesParser) start(loader *fileLoader, tasks []*parseTask, depth int) {
 	for i, task := range tasks {
 		task.path = loader.toPath(task.normalizedFilePath)
+		if loader.base != nil && !w.stopAtExistingFile(loader, task, depth) {
+			continue
+		}
 		candidate := getParseTaskData(task)
 		data, loaded := w.taskDataByPath.LoadOrStore(task.path, candidate)
 		if loaded {
@@ -303,6 +315,44 @@ func (w *filesParser) start(loader *fileLoader, tasks []*parseTask, depth int) {
 	}
 }
 
+// stopAtExistingFile reports whether an incremental root addition should walk this
+// task, which it should not when the base program already holds the file: the file
+// and everything it reaches are already in the program, and only the added root's
+// reason for wanting it is new.
+//
+// What it can meet that means the addition cannot be made at all is anything a
+// rebuild would not have left where the base put it: a lib file, which the parser
+// sorts and puts ahead of every other file; a file the base holds under a different
+// casing; a file an automatic type directive brought in, which a rebuild would place
+// among the added root's own files; and a file the base only found by searching
+// node_modules that this walk reaches without searching, since how deep a file was
+// found is worked out over the whole walk and decides whether the program counts it
+// as coming from a library.
+func (w *filesParser) stopAtExistingFile(loader *fileLoader, task *parseTask, depth int) bool {
+	existing, ok := loader.base.filesByPath[task.path]
+	if !ok {
+		if task.libFile != nil {
+			loader.giveUp()
+		}
+		return true
+	}
+	if existing.FileName() != task.normalizedFilePath {
+		loader.giveUp()
+	}
+	if _, isLib := loader.base.libFiles[task.path]; isLib {
+		loader.giveUp()
+	}
+	if loader.baseFilesAfterRoots.Has(task.path) {
+		loader.giveUp()
+	}
+	if core.IfElse(task.increaseDepth, depth+1, depth) == 0 && loader.base.sourceFilesFoundSearchingNodeModules.Has(task.path) {
+		loader.giveUp()
+	}
+	task.existingFile = existing
+	task.loaded = true
+	return false
+}
+
 func (w *filesParser) getProcessedFiles(loader *fileLoader) processedFiles {
 	totalFileCount := int(loader.totalFileCount.Load())
 	libFileCount := int(loader.libFileCount.Load())
@@ -316,8 +366,10 @@ func (w *filesParser) getProcessedFiles(loader *fileLoader) processedFiles {
 	// stores 'filename -> file association' ignoring case
 	// used to track cases when two file names differ only in casing
 	var tasksSeenByNameIgnoreCase map[string]*parseTask
+	var filesByLowerCasePath map[string]tspath.Path
 	if loader.comparePathsOptions.UseCaseSensitiveFileNames {
 		tasksSeenByNameIgnoreCase = make(map[string]*parseTask, totalFileCount)
+		filesByLowerCasePath = make(map[string]tspath.Path, totalFileCount)
 	}
 
 	includeProcessor := &includeProcessor{
@@ -343,6 +395,28 @@ func (w *filesParser) getProcessedFiles(loader *fileLoader) processedFiles {
 		packageIdToSourceFile = make(map[module.PackageId]*ast.SourceFile)
 	}
 
+	// An incremental root addition starts from everything the base program worked
+	// out, and only the files the added roots newly reach are collected below.
+	base := loader.base
+	if base != nil {
+		filesByPath = maps.Clone(base.filesByPath)
+		resolvedModules = maps.Clone(base.resolvedModules)
+		typeResolutionsInFile = maps.Clone(base.typeResolutionsInFile)
+		sourceFileMetaDatas = maps.Clone(base.sourceFileMetaDatas)
+		jsxRuntimeImportSpecifiers = maps.Clone(base.jsxRuntimeImportSpecifiers)
+		importHelpersImportSpecifiers = maps.Clone(base.importHelpersImportSpecifiers)
+		sourceFilesFoundSearchingNodeModules = *base.sourceFilesFoundSearchingNodeModules.Clone()
+		// copied rather than shared even though no lib file can reach this far —
+		// stopAtExistingFile gives up on one long before — so that nothing here can
+		// write into a map the base program is still answering from
+		libFilesMap = maps.Clone(base.libFiles)
+		filesByLowerCasePath = maps.Clone(base.filesByLowerCasePath)
+		includeProcessor.fileIncludeReasons = maps.Clone(base.includeProcessor.fileIncludeReasons)
+		includeProcessor.processingDiagnostics = slices.Clip(base.includeProcessor.processingDiagnostics)
+		missingFiles = slices.Clip(base.missingFiles)
+		duplicateSourceFiles = slices.Clip(base.duplicateSourceFiles)
+	}
+
 	var collectFiles func(tasks []*parseTask, seen map[*parseTaskData]string)
 	// recordedDuplicates tracks, per task data, the set of file-name casings that
 	// have already been recorded in duplicateSourceFiles. A file that is reached
@@ -352,6 +426,9 @@ func (w *filesParser) getProcessedFiles(loader *fileLoader) processedFiles {
 	// was acquired when the snapshot is disposed, leaving a dangling cache entry that
 	// panics the next time it is referenced.
 	var recordedDuplicates map[*parseTaskData]*collections.Set[string]
+	// automaticTypeDirectiveFilesStart is where in files the automatic type directive
+	// task's own files begin, which is where root files added later have to stop.
+	automaticTypeDirectiveFilesStart := -1
 	collectFiles = func(tasks []*parseTask, seen map[*parseTaskData]string) {
 		for _, task := range tasks {
 			includeReason := task.includeReason
@@ -364,6 +441,10 @@ func (w *filesParser) getProcessedFiles(loader *fileLoader) processedFiles {
 				}
 				w.addIncludeReason(includeProcessor, task, includeReason)
 			}
+			if task.existingFile != nil {
+				// already in the base program, along with everything it reaches
+				continue
+			}
 			data, _ := w.taskDataByPath.Load(task.path)
 			if !task.loaded {
 				continue
@@ -372,6 +453,12 @@ func (w *filesParser) getProcessedFiles(loader *fileLoader) processedFiles {
 			// ensure we only walk each task once
 			if checkedName, ok := seen[data]; ok {
 				if task.file != nil && checkedName != task.normalizedFilePath {
+					if base != nil {
+						// the walk acquired this file, and the caller refs every
+						// duplicate the program reports, so keeping it would leave
+						// the parse cache holding one reference too many
+						loader.giveUp()
+					}
 					if recordedDuplicates == nil {
 						recordedDuplicates = make(map[*parseTaskData]*collections.Set[string])
 					}
@@ -407,6 +494,12 @@ func (w *filesParser) getProcessedFiles(loader *fileLoader) processedFiles {
 					includeProcessor.addProcessingDiagnosticsForFileCasing(taskByIgnoreCase.path, taskByIgnoreCase.normalizedFilePath, task.normalizedFilePath, includeReason)
 				} else {
 					tasksSeenByNameIgnoreCase[pathLowerCase] = task
+					if existingPath, ok := filesByLowerCasePath[pathLowerCase]; ok && existingPath != task.path {
+						// a file the base program holds under a casing this one differs
+						// from: reporting it needs the whole walk, so rebuild instead
+						loader.giveUp()
+					}
+					filesByLowerCasePath[pathLowerCase] = task.path
 				}
 			}
 
@@ -419,6 +512,11 @@ func (w *filesParser) getProcessedFiles(loader *fileLoader) processedFiles {
 
 			file := task.file
 			if packageIdToSourceFile != nil && data.packageId.Name != "" {
+				if base != nil {
+					// which instance of a package wins is decided over the whole walk,
+					// and the base program's decisions are not recorded here
+					loader.giveUp()
+				}
 				if packageIdFile, exists := packageIdToSourceFile[data.packageId]; exists {
 					if file != nil {
 						// Package deduplication keeps the first package instance in the
@@ -448,6 +546,10 @@ func (w *filesParser) getProcessedFiles(loader *fileLoader) processedFiles {
 				} else if file != nil {
 					packageIdToSourceFile[data.packageId] = file
 				}
+			}
+
+			if task.isForAutomaticTypeDirective && automaticTypeDirectiveFilesStart < 0 {
+				automaticTypeDirectiveFilesStart = len(files)
 			}
 
 			if subTasks := task.subTasks; len(subTasks) > 0 {
@@ -515,7 +617,19 @@ func (w *filesParser) getProcessedFiles(loader *fileLoader) processedFiles {
 	collectFiles(loader.rootTasks, make(map[*parseTaskData]string, totalFileCount))
 	loader.sortLibs(libFiles)
 
-	allFiles := append(libFiles, files...)
+	var allFiles []*ast.SourceFile
+	libFileTotal := len(libFiles)
+	rootFilesEnd := len(libFiles) + core.IfElse(automaticTypeDirectiveFilesStart >= 0, automaticTypeDirectiveFilesStart, len(files))
+	if base != nil {
+		// the added roots reached these files, so they belong where a build from
+		// scratch would have put them: after every file the roots before them
+		// reached, and before the ones an automatic type directive brought in
+		allFiles = slices.Concat(base.files[:base.rootFilesEnd], files, base.files[base.rootFilesEnd:])
+		libFileTotal = base.libFileCount
+		rootFilesEnd = base.rootFilesEnd + len(files)
+	} else {
+		allFiles = append(libFiles, files...)
+	}
 	for _, redirectFile := range redirectFilesByPath {
 		redirectFile.index += len(libFiles)
 	}
@@ -551,6 +665,10 @@ func (w *filesParser) getProcessedFiles(loader *fileLoader) processedFiles {
 		outputFileToProjectReferenceSource:   outputFileToProjectReferenceSource,
 		redirectTargetsMap:                   redirectTargetsMap,
 		redirectFilesByPath:                  redirectFilesByPath,
+
+		libFileCount:         libFileTotal,
+		rootFilesEnd:         rootFilesEnd,
+		filesByLowerCasePath: filesByLowerCasePath,
 	}
 }
 
@@ -559,6 +677,10 @@ func (w *filesParser) addIncludeReason(includeProcessor *includeProcessor, task 
 		w.addIncludeReason(includeProcessor, task.redirectedParseTask, reason)
 	} else if task.loaded {
 		if existing, ok := includeProcessor.fileIncludeReasons[task.path]; ok {
+			if w.incremental {
+				// the base program still holds this slice, so grow a copy
+				existing = slices.Clip(existing)
+			}
 			includeProcessor.fileIncludeReasons[task.path] = append(existing, reason)
 		} else {
 			includeProcessor.fileIncludeReasons[task.path] = []*FileIncludeReason{reason}

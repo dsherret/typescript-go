@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -91,8 +92,7 @@ type Program struct {
 
 	usesUriStyleNodeCoreModules core.Tristate
 
-	commonSourceDirectory     string
-	commonSourceDirectoryOnce sync.Once
+	commonSourceDirectory lazyValue[string]
 
 	declarationDiagnosticCache collections.SyncMap[*ast.SourceFile, []*ast.Diagnostic]
 
@@ -335,6 +335,151 @@ func (p *Program) UpdateProgram(changedFilePath tspath.Path, newHost CompilerHos
 	result.filesByPath[newFile.Path()] = newFile
 	updateFileIncludeProcessor(result)
 	return result, newFile, true
+}
+
+// AddRootFiles returns a program built from this one by adding root files appended to
+// the end of its root file list, optionally replacing files whose text changed at the
+// same time, and reports whether it was able to. A false return means the caller has
+// to build a program from scratch; the returned source files were acquired from
+// newHost before that was known and must be released, exactly as for UpdateProgram.
+//
+// The result is the program a build from scratch with newConfig would have produced.
+// What makes that possible is that a root appended to the end can only reach files
+// that are already in the program or are new, so nothing already there moves and
+// nothing already resolved resolves differently. Every way that could stop being true
+// — a lib file, a package installed twice, a file the program holds under another
+// casing, a project reference, a compiler option that differs — is a false return.
+//
+// It is the caller's job to establish the one thing this cannot see: that no file
+// already in the program looked for one of the added files and failed to find it,
+// which a build from scratch would now resolve.
+//
+// The program it returns resolves from a resolver of its own, which starts empty
+// where a rebuilt program's has every resolution the build made. That only costs
+// later queries their cache, except for PackageJsonCacheEntries, which reports what
+// a program looked at and so reports less. Nothing on this path reads it.
+func (p *Program) AddRootFiles(
+	newConfig *tsoptions.ParsedCommandLine,
+	changedFilePaths []tspath.Path,
+	newHost CompilerHost,
+	createCheckerPool func(*Program) CheckerPool,
+) (*Program, []*ast.SourceFile, bool) {
+	if !p.canAddRootFiles(newConfig) {
+		return nil, nil, false
+	}
+	// worked out here rather than taken from the caller, because the index each
+	// added root's include reason carries is its position in this list
+	firstAddedRootIndex := len(p.opts.Config.FileNames())
+	addedRootFileNames := newConfig.FileNames()[firstAddedRootIndex:]
+
+	newOpts := p.opts
+	newOpts.Host = newHost
+	newOpts.Config = newConfig
+	if createCheckerPool != nil {
+		newOpts.CreateCheckerPool = createCheckerPool
+	}
+
+	var acquired []*ast.SourceFile
+	replacements, ok := p.replacementsFor(changedFilePaths, newHost, &acquired)
+	if !ok {
+		return nil, acquired, false
+	}
+
+	processed, addedFiles, ok := processAddedRootFiles(
+		newOpts,
+		&p.processedFiles,
+		addedRootFileNames,
+		firstAddedRootIndex,
+		p.SingleThreaded(),
+	)
+	acquired = append(acquired, addedFiles...)
+	if !ok {
+		return nil, acquired, false
+	}
+
+	result := &Program{
+		opts:                        newOpts,
+		comparePathsOptions:         p.comparePathsOptions,
+		processedFiles:              processed,
+		usesUriStyleNodeCoreModules: p.usesUriStyleNodeCoreModules,
+	}
+	// both of these are freshly built by processAddedRootFiles, so the program being
+	// added to keeps the files it had
+	for path, file := range replacements {
+		result.filesByPath[path] = file
+	}
+	if len(replacements) > 0 {
+		for i, file := range result.files {
+			if replacement, ok := replacements[file.Path()]; ok {
+				result.files[i] = replacement
+			}
+		}
+	}
+	result.initCheckerPool()
+	result.reuseCommonSourceDirectory(p, processed.files[p.rootFilesEnd:processed.rootFilesEnd])
+	result.verifyCompilerOptions()
+	return result, acquired, true
+}
+
+// canAddRootFiles reports whether newConfig differs from this program's config in
+// nothing but root files appended to the end of its list. Everything else about a
+// config decides how the whole program is built, so a difference anywhere else means
+// the program has to be built again rather than added to.
+func (p *Program) canAddRootFiles(newConfig *tsoptions.ParsedCommandLine) bool {
+	if !p.finishedProcessing || p.opts.Tracing != nil {
+		return false
+	}
+	oldConfig := p.opts.Config
+	if len(oldConfig.ProjectReferences()) > 0 || len(newConfig.ProjectReferences()) > 0 {
+		return false
+	}
+	if len(p.redirectFilesByPath) > 0 || len(p.redirectTargetsMap) > 0 {
+		return false
+	}
+	oldRootFileNames := oldConfig.FileNames()
+	newRootFileNames := newConfig.FileNames()
+	// the first build is where the lib files and the automatic type directives are
+	// worked out, so there has to have been one
+	if len(oldRootFileNames) == 0 || len(newRootFileNames) <= len(oldRootFileNames) {
+		return false
+	}
+	if !slices.Equal(oldRootFileNames, newRootFileNames[:len(oldRootFileNames)]) {
+		return false
+	}
+	return reflect.DeepEqual(oldConfig.CompilerOptions(), newConfig.CompilerOptions())
+}
+
+// replacementsFor acquires the new text of each file whose contents changed, and
+// reports whether every one of them can stand in for the file it replaces without
+// changing anything else about the program. Whatever it acquired is appended to
+// acquired whether or not it succeeds, since the caller owns those either way.
+func (p *Program) replacementsFor(
+	changedFilePaths []tspath.Path,
+	newHost CompilerHost,
+	acquired *[]*ast.SourceFile,
+) (map[tspath.Path]*ast.SourceFile, bool) {
+	if len(changedFilePaths) == 0 {
+		return nil, true
+	}
+	replacements := make(map[tspath.Path]*ast.SourceFile, len(changedFilePaths))
+	for _, path := range changedFilePaths {
+		oldFile := p.filesByPath[path]
+		if oldFile == nil {
+			return nil, false
+		}
+		newFile := newHost.GetSourceFile(oldFile.ParseOptions())
+		if newFile != nil {
+			*acquired = append(*acquired, newFile)
+		}
+		if !canReplaceFileInProgram(oldFile, newFile) {
+			return nil, false
+		}
+		if oldNeedsImportHelpers := p.importHelpersImportSpecifiers[path] != nil; oldNeedsImportHelpers != p.needsImportHelpersImportSpecifier(newFile) {
+			return nil, false
+		}
+		replacements[path] = newFile
+	}
+	return replacements, true
 }
 
 func (p *Program) initCheckerPool() {
@@ -923,7 +1068,7 @@ func (p *Program) verifyCompilerOptions() {
 
 		for _, file := range p.files {
 			if sourceFileMayBeEmitted(file, p, false, false) && !rootPaths.Has(file.Path()) {
-				p.includeProcessor.addProcessingDiagnostic(&processingDiagnostic{
+				p.includeProcessor.addOptionsDiagnostic(&processingDiagnostic{
 					kind: processingDiagnosticKindExplainingFileInclude,
 					data: &includeExplainingDiagnostic{
 						file:    file.Path(),
@@ -1565,21 +1710,51 @@ func (p *Program) GetDefaultLibFile(path tspath.Path) *LibFile {
 }
 
 func (p *Program) CommonSourceDirectory() string {
-	p.commonSourceDirectoryOnce.Do(func() {
+	return *p.commonSourceDirectory.getValue(func() *string {
 		files := func() []string {
-			return core.MapFiltered(p.files, func(file *ast.SourceFile) (string, bool) {
-				return file.FileName(), sourceFileMayBeEmitted(file, p, false /*forceDtsEmit*/, false /*forceJsEmit*/) && !file.IsDeclarationFile
-			})
+			return p.emittableFileNames(p.files)
 		}
-		p.commonSourceDirectory = outputpaths.GetCommonSourceDirectory(
+		value := outputpaths.GetCommonSourceDirectory(
 			p.Options(),
 			files,
 			p.GetCurrentDirectory(),
 			p.UseCaseSensitiveFileNames(),
 			p.checkSourceFilesBelongToPath,
 		)
+		return &value
 	})
-	return p.commonSourceDirectory
+}
+
+func (p *Program) emittableFileNames(files []*ast.SourceFile) []string {
+	return core.MapFiltered(files, func(file *ast.SourceFile) (string, bool) {
+		return file.FileName(), sourceFileMayBeEmitted(file, p, false /*forceDtsEmit*/, false /*forceJsEmit*/) && !file.IsDeclarationFile
+	})
+}
+
+// reuseCommonSourceDirectory carries the common source directory over to a program
+// built by adding root files to base, and reports whether it could. It cannot when
+// the directory is the one the files have in common, since a file added anywhere else
+// moves it and with it every path the program would emit to. With a rootDir or a
+// config file the directory is named rather than derived, so all that is left is to
+// say which of the added files fall outside it.
+func (p *Program) reuseCommonSourceDirectory(base *Program, addedFiles []*ast.SourceFile) bool {
+	options := p.Options()
+	var rootDirectory string
+	switch {
+	case options.RootDir != "":
+		rootDirectory = options.RootDir
+	case options.ConfigFilePath != "":
+		rootDirectory = tspath.GetDirectoryPath(options.ConfigFilePath)
+	default:
+		return false
+	}
+	if !base.commonSourceDirectory.initialized.Load() {
+		return false
+	}
+	p.commonSourceDirectory.tryReuse(&base.commonSourceDirectory)
+	p.includeProcessor.rootDirDiagnostics = slices.Clip(base.includeProcessor.rootDirDiagnostics)
+	p.checkSourceFilesBelongToPath(p.emittableFileNames(addedFiles), rootDirectory)
+	return true
 }
 
 func (p *Program) checkSourceFilesBelongToPath(sourceFiles []string, rootDirectory string) bool {
@@ -1587,7 +1762,7 @@ func (p *Program) checkSourceFilesBelongToPath(sourceFiles []string, rootDirecto
 	for _, file := range sourceFiles {
 		absoluteSourceFilePath := tspath.GetCanonicalFileName(tspath.GetNormalizedAbsolutePath(file, p.GetCurrentDirectory()), p.UseCaseSensitiveFileNames())
 		if !tspath.ContainsPath(rootDirectory, file, p.comparePathsOptions) {
-			p.includeProcessor.addProcessingDiagnostic(&processingDiagnostic{
+			p.includeProcessor.addRootDirDiagnostic(&processingDiagnostic{
 				kind: processingDiagnosticKindExplainingFileInclude,
 				data: &includeExplainingDiagnostic{
 					file:    tspath.Path(absoluteSourceFilePath),

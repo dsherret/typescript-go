@@ -46,6 +46,19 @@ type fileLoader struct {
 	filesParser *filesParser
 	rootTasks   []*parseTask
 
+	// base is the program being added to, and is nil for a build from scratch. When
+	// it is set the walk stops at every file the base already holds, and gives up
+	// when it meets something the base cannot simply be extended with.
+	base *processedFiles
+	// baseFilesAfterRoots are the files base holds past the ones its root files
+	// brought in, which is what an automatic type directive brought in. A rebuild
+	// would place any of them an added root reaches among that root's own files
+	// instead, so the walk gives up rather than leave one where it is.
+	baseFilesAfterRoots collections.Set[tspath.Path]
+	gaveUp              atomic.Bool
+	acquiredMu          sync.Mutex
+	acquired            []*ast.SourceFile
+
 	totalFileCount atomic.Int32
 	libFileCount   atomic.Int32
 
@@ -112,11 +125,61 @@ type processedFiles struct {
 	// filesByPath for redirect files
 	redirectFilesByPath map[tspath.Path]*redirectsFile
 	finishedProcessing  bool
+
+	// libFileCount is how many of files are lib files. The parser puts them first.
+	libFileCount int
+	// rootFilesEnd is the index in files just past the last file a root file task
+	// brought in, which is where the files an automatic type directive brought in
+	// start. Roots added to an existing program are inserted there, so that the
+	// order is the one a build from scratch with the same roots would have given.
+	rootFilesEnd int
+	// filesByLowerCasePath is only kept on a case sensitive file system, where two
+	// files can differ in nothing but their casing and the parser says so.
+	filesByLowerCasePath map[string]tspath.Path
 }
 
 type jsxRuntimeImportSpecifier struct {
 	moduleReference string
 	specifier       *ast.StringLiteralNode
+}
+
+// processAddedRootFiles extends base with root files appended to the end of the root
+// file list it was built from, and reports whether the result is the one a build from
+// scratch would have produced. A false return means the caller has to build one.
+//
+// Only the added roots and whatever they reach that is not already in base is walked,
+// so the work is proportional to what is new rather than to the size of the program.
+// Everything else about the result — the order of the files, why each was included,
+// what each import resolved to — is base's, unchanged.
+func processAddedRootFiles(
+	opts ProgramOptions,
+	base *processedFiles,
+	addedRootFiles []string,
+	firstAddedRootIndex int,
+	singleThreaded bool,
+) (files processedFiles, acquired []*ast.SourceFile, ok bool) {
+	loader := newFileLoader(opts, len(addedRootFiles), singleThreaded)
+	loader.base = base
+	for _, file := range base.files[base.rootFilesEnd:] {
+		loader.baseFilesAfterRoots.Add(file.Path())
+	}
+	loader.filesParser.incremental = true
+	loader.addProjectReferenceTasks(singleThreaded)
+	loader.resolver = module.NewResolver(loader.projectReferenceFileMapper.host, opts.Config.CompilerOptions(), opts.TypingsLocation, opts.ProjectName)
+	for index, rootFile := range addedRootFiles {
+		loader.addRootFileTask(rootFile, nil, &FileIncludeReason{kind: fileIncludeKindRootFile, data: firstAddedRootIndex + index})
+	}
+
+	loader.filesParser.parse(&loader, loader.rootTasks)
+
+	loader.projectReferenceFileMapper.loader = nil
+	loader.projectReferenceFileMapper.host = nil
+
+	if loader.gaveUp.Load() {
+		return processedFiles{}, loader.acquired, false
+	}
+	files = loader.filesParser.getProcessedFiles(&loader)
+	return files, loader.acquired, !loader.gaveUp.Load()
 }
 
 func processAllProgramFiles(
@@ -125,27 +188,7 @@ func processAllProgramFiles(
 ) processedFiles {
 	compilerOptions := opts.Config.CompilerOptions()
 	rootFiles := opts.Config.FileNames()
-	supportedExtensions := tsoptions.GetSupportedExtensions(compilerOptions, nil /*extraFileExtensions*/)
-	supportedExtensionsWithJsonIfResolveJsonModule := tsoptions.GetSupportedExtensionsWithJsonIfResolveJsonModule(compilerOptions, supportedExtensions)
-	var maxNodeModuleJsDepth int
-	if p := opts.Config.CompilerOptions().MaxNodeModuleJsDepth; p != nil {
-		maxNodeModuleJsDepth = *p
-	}
-	loader := fileLoader{
-		opts:               opts,
-		defaultLibraryPath: tspath.GetNormalizedAbsolutePath(opts.Host.DefaultLibraryPath(), opts.Host.GetCurrentDirectory()),
-		comparePathsOptions: tspath.ComparePathsOptions{
-			UseCaseSensitiveFileNames: opts.Host.FS().UseCaseSensitiveFileNames(),
-			CurrentDirectory:          opts.Host.GetCurrentDirectory(),
-		},
-		filesParser: &filesParser{
-			wg:       core.NewWorkGroup(singleThreaded),
-			maxDepth: maxNodeModuleJsDepth,
-		},
-		rootTasks:           make([]*parseTask, 0, len(rootFiles)+len(compilerOptions.Lib)),
-		supportedExtensions: supportedExtensions,
-		supportedExtensionsWithJsonIfResolveJsonModule: supportedExtensionsWithJsonIfResolveJsonModule,
-	}
+	loader := newFileLoader(opts, len(rootFiles)+len(compilerOptions.Lib), singleThreaded)
 	loader.addProjectReferenceTasks(singleThreaded)
 	loader.resolver = module.NewResolver(loader.projectReferenceFileMapper.host, compilerOptions, opts.TypingsLocation, opts.ProjectName)
 	if opts.Tracing != nil {
@@ -182,6 +225,36 @@ func processAllProgramFiles(
 	loader.projectReferenceFileMapper.host = nil
 
 	return loader.filesParser.getProcessedFiles(&loader)
+}
+
+func newFileLoader(opts ProgramOptions, rootTaskCapacity int, singleThreaded bool) fileLoader {
+	compilerOptions := opts.Config.CompilerOptions()
+	supportedExtensions := tsoptions.GetSupportedExtensions(compilerOptions, nil /*extraFileExtensions*/)
+	var maxNodeModuleJsDepth int
+	if p := compilerOptions.MaxNodeModuleJsDepth; p != nil {
+		maxNodeModuleJsDepth = *p
+	}
+	return fileLoader{
+		opts:               opts,
+		defaultLibraryPath: tspath.GetNormalizedAbsolutePath(opts.Host.DefaultLibraryPath(), opts.Host.GetCurrentDirectory()),
+		comparePathsOptions: tspath.ComparePathsOptions{
+			UseCaseSensitiveFileNames: opts.Host.FS().UseCaseSensitiveFileNames(),
+			CurrentDirectory:          opts.Host.GetCurrentDirectory(),
+		},
+		filesParser: &filesParser{
+			wg:       core.NewWorkGroup(singleThreaded),
+			maxDepth: maxNodeModuleJsDepth,
+		},
+		rootTasks:           make([]*parseTask, 0, rootTaskCapacity),
+		supportedExtensions: supportedExtensions,
+		supportedExtensionsWithJsonIfResolveJsonModule: tsoptions.GetSupportedExtensionsWithJsonIfResolveJsonModule(compilerOptions, supportedExtensions),
+	}
+}
+
+// giveUp records that the walk has met something an incremental root addition cannot
+// reproduce, so its caller must build a program from scratch instead.
+func (p *fileLoader) giveUp() {
+	p.gaveUp.Store(true)
 }
 
 func (p *fileLoader) toPath(file string) tspath.Path {
@@ -372,6 +445,13 @@ func (p *fileLoader) parseSourceFile(t *parseTask) *ast.SourceFile {
 		Path:                           path,
 		ExternalModuleIndicatorOptions: ast.GetExternalModuleIndicatorOptions(t.normalizedFilePath, options, t.metadata),
 	})
+	if p.base != nil && sourceFile != nil {
+		// an incremental root addition has to give these back if it turns out it
+		// cannot be made, since nothing else will own them
+		p.acquiredMu.Lock()
+		p.acquired = append(p.acquired, sourceFile)
+		p.acquiredMu.Unlock()
+	}
 	return sourceFile
 }
 

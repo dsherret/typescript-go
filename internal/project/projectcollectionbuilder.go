@@ -272,7 +272,8 @@ func (b *ProjectCollectionBuilder) DidChangeFiles(summary FileChangeSummary, log
 		if summary.HasExcessiveNonCreateWatchEvents() {
 			entry.Change(func(p *Project) {
 				p.dirty = true
-				p.dirtyFilePath = ""
+				p.dirtyFiles = nil
+				p.dirtyFilesKnown = false
 				if logger != nil {
 					logger.Logf("Marking project as dirty due to excessive watch changes: %s", p.configFilePath)
 				}
@@ -653,7 +654,8 @@ func (b *ProjectCollectionBuilder) DidUpdateATAState(ataChanges map[tspath.Path]
 				)
 				p.typingsWatch = p.typingsWatch.Clone(typingsWatchGlobs)
 				p.dirty = true
-				p.dirtyFilePath = ""
+				p.dirtyFiles = nil
+				p.dirtyFilesKnown = false
 			},
 		)
 	}
@@ -693,10 +695,11 @@ func (b *ProjectCollectionBuilder) markProjectsAffectedByConfigChanges(
 			panic(fmt.Sprintf("project %s affected by config change not found", projectPath))
 		}
 		project.ChangeIf(
-			func(p *Project) bool { return !p.dirty || p.dirtyFilePath != "" },
+			// what changed about the config is read out of the config itself when the
+			// program is next built, so the files that changed stay as they are
+			func(p *Project) bool { return !p.dirty },
 			func(p *Project) {
 				p.dirty = true
-				p.dirtyFilePath = ""
 				if logger != nil {
 					logger.Logf("Marking project %s as dirty due to change affecting config", projectPath)
 				}
@@ -1148,7 +1151,8 @@ func (b *ProjectCollectionBuilder) updateProgram(entry dirty.Value[*Project], lo
 					project.programFilesWatch = project.CloneWatchers()
 				}
 				project.dirty = false
-				project.dirtyFilePath = ""
+				project.dirtyFiles = nil
+				project.dirtyFilesKnown = true
 				b.releaseDroppedProjectReferences(oldProgram, result.Program, project.configFilePath)
 				if oldCheckerPool != nil {
 					oldCheckerPool.Discard()
@@ -1166,52 +1170,67 @@ func (b *ProjectCollectionBuilder) updateProgram(entry dirty.Value[*Project], lo
 	return filesChanged
 }
 
+// maxDirtyFilesTracked bounds the list of changed files a project carries. Swapping
+// files into a program one at a time stops paying once there are many of them — each
+// one is a lookup through the host and a comparison of what it imports — and keeping
+// the list short is also what keeps the search through it cheap when a whole batch of
+// files changes at once.
+const maxDirtyFilesTracked = 8
+
 func (b *ProjectCollectionBuilder) markFilesChanged(entry dirty.Value[*Project], paths []tspath.Path, changeType lsproto.FileChangeType, logger *logging.LogTree) {
 	var dirty bool
-	var dirtyFilePath tspath.Path
+	var dirtyFiles []tspath.Path
+	var dirtyFilesKnown bool
 	entry.ChangeIf(
 		func(p *Project) bool {
-			if p.Program == nil || p.dirty && p.dirtyFilePath == "" {
+			if p.Program == nil || p.dirty && !p.dirtyFilesKnown {
 				return false
 			}
 
-			dirtyFilePath = p.dirtyFilePath
+			dirtyFiles = p.dirtyFiles
+			dirtyFilesKnown = p.dirtyFilesKnown
 			for _, path := range paths {
 				if p.containsFile(path) {
 					dirty = true
 					if changeType == lsproto.FileChangeTypeDeleted {
-						dirtyFilePath = ""
+						dirtyFilesKnown = false
 						break
 					}
 					// package.json changes can affect module resolution and package
 					// identity (e.g. dedup decisions), so they must always trigger
 					// a full rebuild rather than a single-file clone.
 					if tspath.GetBaseFileName(string(path)) == "package.json" {
-						dirtyFilePath = ""
+						dirtyFilesKnown = false
 						break
 					}
-					if dirtyFilePath == "" {
-						dirtyFilePath = path
-					} else if dirtyFilePath != path {
-						dirtyFilePath = ""
+					if len(dirtyFiles) == maxDirtyFilesTracked {
+						dirtyFilesKnown = false
 						break
+					}
+					if !slices.Contains(dirtyFiles, path) {
+						// clipped because the project this list came from is still using it
+						dirtyFiles = append(slices.Clip(dirtyFiles), path)
 					}
 				} else if p.host != nil &&
 					(changeType == lsproto.FileChangeTypeCreated && p.host.sourceFS.SeenFileOrMissingParentDirectory(path) ||
 						changeType != lsproto.FileChangeTypeCreated && p.host.sourceFS.SeenFile(path)) {
 					dirty = true
-					dirtyFilePath = ""
+					dirtyFilesKnown = false
 					break
 				}
 			}
-			return dirty || p.dirtyFilePath != dirtyFilePath
+			if !dirtyFilesKnown {
+				dirtyFiles = nil
+			}
+			return dirty || dirtyFilesKnown != p.dirtyFilesKnown || len(dirtyFiles) != len(p.dirtyFiles)
 		},
 		func(p *Project) {
 			p.dirty = true
-			p.dirtyFilePath = dirtyFilePath
+			p.dirtyFiles = dirtyFiles
+			p.dirtyFilesKnown = dirtyFilesKnown
 			if logger != nil {
-				if dirtyFilePath != "" {
-					logger.Logf("Marking project %s as dirty due to changes in %s", p.configFileName, dirtyFilePath)
+				if len(dirtyFiles) > 0 {
+					logger.Logf("Marking project %s as dirty due to changes in %s", p.configFileName, dirtyFiles)
 				} else {
 					logger.Logf("Marking project %s as dirty", p.configFileName)
 				}
