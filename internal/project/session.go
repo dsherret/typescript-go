@@ -1551,7 +1551,7 @@ func (s *Session) logCacheStats(snapshot *Snapshot) {
 	var parseCacheSize int
 	var extendedConfigCount int
 	if s.logger.IsVerbose() {
-		s.parseCache.entries.Range(func(_ ParseCacheKey, _ *refCountCacheEntry[*ast.SourceFile]) bool {
+		s.parseCache.entries.Range(func(_ ParseCacheKey, _ *refCountCacheEntry[ParseCacheKey, *ast.SourceFile]) bool {
 			parseCacheSize++
 			return true
 		})

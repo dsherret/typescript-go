@@ -517,6 +517,20 @@ func (r *resolutionState) resolveFromTypeRoot() *resolved {
 }
 
 func (r *resolutionState) getPackageScopeForPath(directory string) *packagejson.InfoCacheEntry {
+	// a traced resolution has to make the lookups again, because what it is for is
+	// reporting them
+	if r.tracer != nil {
+		return r.getPackageScopeForPathWorker(directory)
+	}
+	if cached, ok := r.resolver.packageScopeCache.Load(directory); ok {
+		return cached
+	}
+	result := r.getPackageScopeForPathWorker(directory)
+	r.resolver.packageScopeCache.Store(directory, result)
+	return result
+}
+
+func (r *resolutionState) getPackageScopeForPathWorker(directory string) *packagejson.InfoCacheEntry {
 	result := tspath.ForEachAncestorDirectoryStoppingAtGlobalCache(
 		r.resolver.typingsLocation,
 		directory,

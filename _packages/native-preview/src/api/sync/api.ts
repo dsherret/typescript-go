@@ -75,6 +75,7 @@ import type {
     OrganizeImportsMode,
     ParsedCommandLine,
     ProfileResult,
+    ProjectConfig,
     ProjectReference,
     ProjectResponse,
     QuotePreference,
@@ -148,7 +149,7 @@ import type {
 
 export { documentURIToFileName, fileNameToDocumentURI } from "../path.ts";
 export { CheckFlags, CompletionItemKind, DiagnosticCategory, ElementFlags, EmitOnly, ModifierFlags, ModuleKind, NodeBuilderFlags, ObjectFlags, SignatureFlags, SignatureKind, SymbolFlags, TypeFlags, TypePredicateKind };
-export type { APIOptions, AssertsIdentifierTypePredicate, AssertsThisTypePredicate, BigIntLiteralType, BooleanLiteralType, ClientSocketOptions, ClientSpawnOptions, CompilerOptions, CompletionEntry, CompletionInfo, CompletionOptions, ConditionalType, Diagnostic, DocumentIdentifier, DocumentPosition, EmitOutput, EmitOutputFile, EmitResult, FreshableType, GetImportEditsForSymbolsOptions, IdentifierTypePredicate, ImportAdderAction, IndexedAccessType, IndexInfo, IndexType, InterfaceType, IntersectionType, IntrinsicType, JSDocTagInfo, LiteralType, LSPConnectionOptions, NumberLiteralType, ObjectType, ParsedCommandLine, ProjectReference, RenameOptions, RequestTiming, SourceFileMetadata, StringLiteralType, StringMappingType, SubstitutionType, TemplateLiteralType, TextEdit, ThisTypePredicate, TimingAccumulators, TimingInfo, TupleType, Type, TypeAcquisition, TypeParameter, TypePredicate, TypePredicateBase, TypeReference, UnionOrIntersectionType, UnionType };
+export type { APIOptions, AssertsIdentifierTypePredicate, AssertsThisTypePredicate, BigIntLiteralType, BooleanLiteralType, ClientSocketOptions, ClientSpawnOptions, CompilerOptions, CompletionEntry, CompletionInfo, CompletionOptions, ConditionalType, Diagnostic, DocumentIdentifier, DocumentPosition, EmitOutput, EmitOutputFile, EmitResult, FreshableType, GetImportEditsForSymbolsOptions, IdentifierTypePredicate, ImportAdderAction, IndexedAccessType, IndexInfo, IndexType, InterfaceType, IntersectionType, IntrinsicType, JSDocTagInfo, LiteralType, LSPConnectionOptions, NumberLiteralType, ObjectType, ParsedCommandLine, ProjectConfig, ProjectReference, RenameOptions, RequestTiming, SourceFileMetadata, StringLiteralType, StringMappingType, SubstitutionType, TemplateLiteralType, TextEdit, ThisTypePredicate, TimingAccumulators, TimingInfo, TupleType, Type, TypeAcquisition, TypeParameter, TypePredicate, TypePredicateBase, TypeReference, UnionOrIntersectionType, UnionType };
 
 interface EmitOutputResponse {
     readonly emitSkipped: boolean;
@@ -689,17 +690,17 @@ class ProjectObjectRegistry {
 export class Project {
     readonly id: Path;
     readonly configFileName: string;
-    readonly parsedCommandLine: ParsedCommandLine;
+    /** The project's config, without its root file list — see `getRootFileNames`. */
+    readonly parsedCommandLine: ProjectConfig;
     /** @deprecated Use `parsedCommandLine.options`. */
     readonly compilerOptions: CompilerOptions;
-    /** @deprecated Use `parsedCommandLine.fileNames`. */
-    readonly rootFiles: readonly string[];
 
     readonly program: Program;
     readonly checker: Checker;
     readonly emitter: Emitter;
     private client: Client;
     private snapshotId: number;
+    private rootFileNames: readonly string[] | undefined;
 
     constructor(
         data: ProjectResponse,
@@ -713,7 +714,6 @@ export class Project {
         this.configFileName = data.configFileName;
         this.parsedCommandLine = data.parsedCommandLine;
         this.compilerOptions = this.parsedCommandLine.options;
-        this.rootFiles = this.parsedCommandLine.fileNames;
         this.client = client;
         this.snapshotId = snapshotId;
         this.program = new Program(
@@ -731,6 +731,23 @@ export class Project {
             objectRegistry,
         );
         this.emitter = new Emitter(client);
+    }
+
+    /**
+     * The project's root file names, as its config resolved them.
+     *
+     * These are fetched the first time they are asked for rather than sent with
+     * the project, because the list is as long as the project and a snapshot
+     * describes every project it holds: carrying it would make every edit cost
+     * time proportional to the size of the project, for a list most callers never
+     * read.
+     */
+    getRootFileNames(): readonly string[] {
+        this.rootFileNames ??= this.client.apiRequest<string[]>("getProjectRootFiles", {
+            snapshot: this.snapshotId,
+            project: this.id,
+        }) ?? [];
+        return this.rootFileNames;
     }
 
     getImportAdderEdits(file: DocumentIdentifier, actions: readonly ImportAdderAction[]): readonly TextEdit[] {

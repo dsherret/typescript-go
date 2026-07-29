@@ -86,6 +86,7 @@ const (
 	MethodGetSourceFileNames       Method = "getSourceFileNames"
 	MethodGetSourceFileMetadata    Method = "getSourceFileMetadata"
 	MethodGetConfigFileNames       Method = "getConfigFileNames"
+	MethodGetProjectRootFiles      Method = "getProjectRootFiles"
 	MethodGetConfigSourceFile      Method = "getConfigSourceFile"
 	MethodResolveName              Method = "resolveName"
 	MethodGetSignaturesOfType      Method = "getSignaturesOfType"
@@ -416,6 +417,7 @@ var unmarshalers = map[Method]func([]byte) (any, error){
 	MethodGetSourceFileNames:       unmarshallerFor[GetSourceFileNamesParams],
 	MethodGetSourceFileMetadata:    unmarshallerFor[GetSourceFileParams],
 	MethodGetConfigFileNames:       unmarshallerFor[GetProjectDiagnosticsParams],
+	MethodGetProjectRootFiles:      unmarshallerFor[GetProjectDiagnosticsParams],
 	MethodGetConfigSourceFile:      unmarshallerFor[GetSourceFileParams],
 	MethodGetSymbolAtPosition:      unmarshallerFor[GetSymbolAtPositionParams],
 	MethodGetSymbolsAtPositions:    unmarshallerFor[GetSymbolsAtPositionsParams],
@@ -571,8 +573,10 @@ type ProfileResult struct {
 	File string `json:"file"`
 }
 
-type ConfigFileResponse struct {
-	FileNames         []string                 `json:"fileNames"`
+// ProjectConfigResponse is a config as a project reports it: everything a
+// ConfigFileResponse holds except the root file list, which a project's
+// description leaves off — see NewProjectResponse.
+type ProjectConfigResponse struct {
 	Options           *core.CompilerOptions    `json:"options"`
 	ProjectReferences []*core.ProjectReference `json:"projectReferences,omitempty"`
 	TypeAcquisition   *core.TypeAcquisition    `json:"typeAcquisition,omitempty"`
@@ -581,23 +585,34 @@ type ConfigFileResponse struct {
 	Errors []*DiagnosticResponse `json:"errors,omitempty"`
 }
 
+type ConfigFileResponse struct {
+	FileNames []string `json:"fileNames"`
+	ProjectConfigResponse
+}
+
 type GetDefaultProjectForFileParams struct {
 	Snapshot SnapshotID         `json:"snapshot"`
 	File     DocumentIdentifier `json:"file"`
 }
 
 type ProjectResponse struct {
-	Id                ProjectID             `json:"id"`
-	ConfigFileName    string                `json:"configFileName"`
-	ParsedCommandLine *ConfigFileResponse   `json:"parsedCommandLine"`
-	RootFiles         []string              `json:"rootFiles"`
-	CompilerOptions   *core.CompilerOptions `json:"compilerOptions"`
+	Id                ProjectID              `json:"id"`
+	ConfigFileName    string                 `json:"configFileName"`
+	ParsedCommandLine *ProjectConfigResponse `json:"parsedCommandLine"`
+	CompilerOptions   *core.CompilerOptions  `json:"compilerOptions"`
 }
 
 func NewConfigFileResponse(parsedCommandLine *tsoptions.ParsedCommandLine) *ConfigFileResponse {
 	if parsedCommandLine == nil {
 		return nil
 	}
+	return &ConfigFileResponse{
+		FileNames:             parsedCommandLine.FileNames(),
+		ProjectConfigResponse: newProjectConfigResponse(parsedCommandLine),
+	}
+}
+
+func newProjectConfigResponse(parsedCommandLine *tsoptions.ParsedCommandLine) ProjectConfigResponse {
 	compileOnSave := parsedCommandLine.CompileOnSave
 	if compileOnSave == nil {
 		if rawConfig, ok := parsedCommandLine.Raw.(*collections.OrderedMap[string, any]); ok {
@@ -606,10 +621,8 @@ func NewConfigFileResponse(parsedCommandLine *tsoptions.ParsedCommandLine) *Conf
 			}
 		}
 	}
-	compilerOptions := parsedCommandLine.CompilerOptions()
-	return &ConfigFileResponse{
-		FileNames:         parsedCommandLine.FileNames(),
-		Options:           compilerOptions,
+	return ProjectConfigResponse{
+		Options:           parsedCommandLine.CompilerOptions(),
 		ProjectReferences: parsedCommandLine.ProjectReferences(),
 		TypeAcquisition:   parsedCommandLine.TypeAcquisition(),
 		CompileOnSave:     compileOnSave,
@@ -617,16 +630,22 @@ func NewConfigFileResponse(parsedCommandLine *tsoptions.ParsedCommandLine) *Conf
 	}
 }
 
+// NewProjectResponse describes a project to the client, without its root file list.
+//
+// The list is as long as the project, and updateSnapshot answers with every project
+// in the snapshot, so carrying it here would make every edit — every snapshot — cost
+// time proportional to the size of the project, for a list most callers never read.
+// The client asks for it with getProjectRootFiles when something does.
 func NewProjectResponse(p *project.Project) *ProjectResponse {
 	if p == nil || p.CommandLine == nil {
 		panic("NewProjectResponse called with unloaded project")
 	}
+	config := newProjectConfigResponse(p.CommandLine)
 	return &ProjectResponse{
 		Id:                ProjectHandle(p),
 		ConfigFileName:    p.Name(),
-		ParsedCommandLine: NewConfigFileResponse(p.CommandLine),
-		RootFiles:         p.CommandLine.FileNames(),
-		CompilerOptions:   p.CommandLine.CompilerOptions(),
+		ParsedCommandLine: &config,
+		CompilerOptions:   config.Options,
 	}
 }
 

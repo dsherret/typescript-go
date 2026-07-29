@@ -546,7 +546,7 @@ func (s *Snapshot) dispose(session *Session) {
 				project.checkerPool.Discard()
 			}
 			for _, file := range project.Program.SourceFiles() {
-				session.parseCache.Deref(NewParseCacheKey(file.ParseOptions(), file.Hash, file.ScriptKind))
+				session.parseCache.DerefValue(file)
 			}
 			for _, file := range project.Program.DuplicateSourceFiles() {
 				session.parseCache.Deref(NewParseCacheKey(file.ParseOptions, file.Hash, file.ScriptKind))

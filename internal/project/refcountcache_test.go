@@ -228,7 +228,7 @@ func TestRefCountingCaches(t *testing.T) {
 			assert.NilError(t, err)
 
 			var projectEntries int
-			session.parseCache.entries.Range(func(key ParseCacheKey, _ *refCountCacheEntry[*ast.SourceFile]) bool {
+			session.parseCache.entries.Range(func(key ParseCacheKey, _ *refCountCacheEntry[ParseCacheKey, *ast.SourceFile]) bool {
 				if strings.HasPrefix(key.FileName, "/user/username/projects/myproject/src/") {
 					projectEntries++
 				}
@@ -244,7 +244,7 @@ func TestRefCountingCaches(t *testing.T) {
 			session.WaitForBackgroundTasks()
 
 			projectEntries = 0
-			session.parseCache.entries.Range(func(key ParseCacheKey, _ *refCountCacheEntry[*ast.SourceFile]) bool {
+			session.parseCache.entries.Range(func(key ParseCacheKey, _ *refCountCacheEntry[ParseCacheKey, *ast.SourceFile]) bool {
 				if strings.HasPrefix(key.FileName, "/user/username/projects/myproject/src/") {
 					projectEntries++
 				}
@@ -341,7 +341,7 @@ func TestRefCountingCaches(t *testing.T) {
 			session.WaitForBackgroundTasks()
 
 			projectEntries := 0
-			session.parseCache.entries.Range(func(key ParseCacheKey, _ *refCountCacheEntry[*ast.SourceFile]) bool {
+			session.parseCache.entries.Range(func(key ParseCacheKey, _ *refCountCacheEntry[ParseCacheKey, *ast.SourceFile]) bool {
 				if strings.HasPrefix(key.FileName, "/user/username/projects/myproject/src/") {
 					projectEntries++
 				}

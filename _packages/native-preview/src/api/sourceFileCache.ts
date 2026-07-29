@@ -113,6 +113,10 @@ export class SourceFileCache {
 
             const prevRef = refKey(previousSnapshotId, projectId);
             const newRef = refKey(newSnapshotId, projectId);
+            // hoisted: this runs once per file the previous snapshot referenced, on
+            // every snapshot, so looking the destination up per file would be two
+            // more map lookups each
+            const newPaths = this.pathsFor(newSnapshotId, projectId);
 
             for (const path of paths) {
                 if (invalidPaths?.has(path)) continue;
@@ -121,7 +125,7 @@ export class SourceFileCache {
                 for (const entry of entries) {
                     if (entry.refs.has(prevRef)) {
                         entry.refs.add(newRef);
-                        this.trackPath(newSnapshotId, projectId, path);
+                        newPaths.add(path);
                     }
                 }
             }
@@ -156,6 +160,11 @@ export class SourceFileCache {
     }
 
     private trackPath(snapshotId: number, projectId: string, path: Path): void {
+        this.pathsFor(snapshotId, projectId).add(path);
+    }
+
+    /** The set of paths a (snapshot, project) pair has fetched, created if new. */
+    private pathsFor(snapshotId: number, projectId: string): Set<Path> {
         let projectMap = this.snapshotProjectPaths.get(snapshotId);
         if (!projectMap) {
             projectMap = new Map();
@@ -166,7 +175,7 @@ export class SourceFileCache {
             paths = new Set();
             projectMap.set(projectId, paths);
         }
-        paths.add(path);
+        return paths;
     }
 
     /**

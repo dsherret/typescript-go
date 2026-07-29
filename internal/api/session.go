@@ -600,6 +600,8 @@ func (s *Session) HandleRequest(ctx context.Context, method string, params json.
 		return s.handleGetSourceFileMetadata(ctx, parsed.(*GetSourceFileParams))
 	case string(MethodGetConfigFileNames):
 		return s.handleGetConfigFileNames(ctx, parsed.(*GetProjectDiagnosticsParams))
+	case string(MethodGetProjectRootFiles):
+		return s.handleGetProjectRootFiles(ctx, parsed.(*GetProjectDiagnosticsParams))
 	case string(MethodGetConfigSourceFile):
 		return s.handleGetConfigSourceFile(ctx, parsed.(*GetSourceFileParams))
 	case string(MethodGetSymbolAtPosition):
@@ -1189,6 +1191,25 @@ func (s *Session) handleGetSourceFile(ctx context.Context, params *GetSourceFile
 	}
 
 	return s.encodeSourceFileResponse(program.GetSourceFile(params.File.ToFileName()))
+}
+
+// handleGetProjectRootFiles returns the project's root file list, which its
+// description leaves off — see NewProjectResponse.
+func (s *Session) handleGetProjectRootFiles(ctx context.Context, params *GetProjectDiagnosticsParams) ([]string, error) {
+	sd, err := s.getSnapshotData(params.Snapshot)
+	if err != nil {
+		return nil, err
+	}
+	// the project's command line rather than the program's, which is the one the
+	// project reports elsewhere and does not carry files the typings installer added
+	proj, err := sd.getProject(params.Project)
+	if err != nil {
+		return nil, err
+	}
+	if proj.CommandLine == nil {
+		return nil, nil
+	}
+	return proj.CommandLine.FileNames(), nil
 }
 
 // handleGetConfigFileNames returns tsconfig file names associated with the project's command line.
