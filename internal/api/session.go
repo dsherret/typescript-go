@@ -3567,9 +3567,11 @@ func computeSnapshotChanges(prev *project.Snapshot, next *project.Snapshot) *Sna
 			}
 			var projectChanges ProjectFileChanges
 			// a program built from the one the previous snapshot holds already knows
-			// the files it replaced, and took none away, so there is nothing to diff
-			if changed, ok := newProgram.FilesChangedFrom(oldProgram); ok {
+			// the files it replaced and the ones it took away, so there is nothing
+			// to diff
+			if changed, removed, ok := newProgram.FilesChangedFrom(oldProgram); ok {
 				projectChanges.ChangedFiles = slices.Clone(changed)
+				projectChanges.DeletedFiles = slices.Clone(removed)
 			} else {
 				var oldFiles, newFiles map[tspath.Path]*ast.SourceFile
 				if oldProgram != nil {

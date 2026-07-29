@@ -78,6 +78,57 @@ func TestAPIRootsProjectLevelRemoval(t *testing.T) {
 	addRootsClose(t, session)
 }
 
+// TestAPIRootsProjectLevelRolling is the loop this whole thing exists for: a file
+// created and a file dropped on every step, over the API, against a program that is
+// never built again. It checks the program against one opened with the same files
+// every step, and the parse cache ledger with it — a removal that let go of a file the
+// program still holds, or held on to one it does not, would show up there rather than
+// in what the program says.
+func TestAPIRootsProjectLevelRolling(t *testing.T) {
+	t.Parallel()
+	if !bundled.Embedded {
+		t.Skip("bundled files are not embedded")
+	}
+
+	files := map[string]string{}
+	var roots []string
+	for i := range 4 {
+		name := fmt.Sprintf("/p/b%d.ts", i)
+		files[name] = fmt.Sprintf("export const v%d = %d;", i, i)
+		roots = append(roots, name)
+	}
+	session, fs := newAPIRootsSession(t, files, roots)
+
+	for i := range 6 {
+		added := fmt.Sprintf("/p/c%d.ts", i)
+		text := fmt.Sprintf("export const w%d = %d;", i, i)
+		assert.NilError(t, fs.WriteFile(added, text))
+		files[added] = text
+		dropped := roots[0]
+		assert.NilError(t, fs.Remove(dropped))
+		delete(files, dropped)
+		roots = slices.Concat(roots[1:], []string{added})
+
+		var changes FileChangeSummary
+		changes.Created.Add(addRootsURI(added))
+		changes.Deleted.Add(addRootsURI(dropped))
+		changes.IncludesWatchChangeOutsideNodeModules = true
+		before := addRootsProgram(t, session).GetIncludeReasons()
+		apiRootsUpdate(t, session, changes, &APIRootFileChange{Added: []string{added}, Removed: []string{dropped}})
+
+		program := addRootsProgram(t, session)
+		assert.Assert(t, addRootsReusedProgram(before, program.GetIncludeReasons()), "step %d", i)
+		assert.Assert(t, program.GetSourceFileByPath(tspath.Path(dropped)) == nil, "step %d kept %s", i, dropped)
+		assert.Assert(t, program.GetSourceFileByPath(tspath.Path(added)) != nil, "step %d missed %s", i, added)
+
+		atOnce, _ := newAPIRootsSession(t, files, roots)
+		assert.Equal(t, addRootsExplain(program), addRootsExplain(addRootsProgram(t, atOnce)), "explained files at step %d", i)
+		addRootsAssertRefCounts(t, session, program)
+		addRootsClose(t, atOnce)
+	}
+	addRootsClose(t, session)
+}
+
 func newAPIRootsSession(t *testing.T, files map[string]string, roots []string) (*Session, *addRootsVFS) {
 	t.Helper()
 	initial := map[string]any{addRootsConfigFile: apiRootsConfigJSON()}

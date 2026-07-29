@@ -55,9 +55,20 @@ type fileLoader struct {
 	// would place any of them an added root reaches among that root's own files
 	// instead, so the walk gives up rather than leave one where it is.
 	baseFilesAfterRoots collections.Set[tspath.Path]
-	gaveUp              atomic.Bool
-	acquiredMu          sync.Mutex
-	acquired            []*ast.SourceFile
+	// removed names the root files the result is being built without, and is empty
+	// for an addition that takes nothing away.
+	removed *removedRoots
+	// fileIncludeReasonsWithoutRemoved is base's include reasons with the removed
+	// files' own entries dropped and the reasons they gave other files filtered out.
+	// It is worked out before the walk, since it is also what says the removal can be
+	// made at all — see canRemoveRoots.
+	fileIncludeReasonsWithoutRemoved map[tspath.Path][]*FileIncludeReason
+	// newFiles are the files this walk brought into the program, in the order the
+	// result holds them. It is only set when the result extends an existing program.
+	newFiles   []*ast.SourceFile
+	gaveUp     atomic.Bool
+	acquiredMu sync.Mutex
+	acquired   []*ast.SourceFile
 
 	totalFileCount atomic.Int32
 	libFileCount   atomic.Int32
@@ -143,31 +154,45 @@ type jsxRuntimeImportSpecifier struct {
 	specifier       *ast.StringLiteralNode
 }
 
-// processAddedRootFiles extends base with root files appended to the end of the root
-// file list it was built from, and reports whether the result is the one a build from
-// scratch would have produced. A false return means the caller has to build one.
+// processRootFileChanges rebuilds base with root files dropped from and appended to
+// the root file list it was built from, and reports whether the result is the one a
+// build from scratch would have produced. A false return means the caller has to build
+// one.
 //
 // Only the added roots and whatever they reach that is not already in base is walked,
-// so the work is proportional to what is new rather than to the size of the program.
+// so the work is proportional to what changed rather than to the size of the program.
 // Everything else about the result — the order of the files, why each was included,
 // what each import resolved to — is base's, unchanged.
-func processAddedRootFiles(
+//
+// A removal is the harder of the two, because a file leaving can change what other
+// files resolve to where a file arriving at the end cannot. It is only made when the
+// removed roots are ones the rest of the program never asked for: see canRemoveRoots
+// for the whole of that argument.
+func processRootFileChanges(
 	opts ProgramOptions,
 	base *processedFiles,
+	removed *removedRoots,
 	addedRootFiles []string,
-	firstAddedRootIndex int,
 	singleThreaded bool,
-) (files processedFiles, acquired []*ast.SourceFile, ok bool) {
+) (files processedFiles, acquired []*ast.SourceFile, newFiles []*ast.SourceFile, ok bool) {
 	loader := newFileLoader(opts, len(addedRootFiles), singleThreaded)
 	loader.base = base
+	loader.removed = removed
 	for _, file := range base.files[base.rootFilesEnd:] {
 		loader.baseFilesAfterRoots.Add(file.Path())
+	}
+	if !removed.isEmpty() {
+		reasons, canRemove := canRemoveRoots(base, removed)
+		if !canRemove {
+			return processedFiles{}, nil, nil, false
+		}
+		loader.fileIncludeReasonsWithoutRemoved = reasons
 	}
 	loader.filesParser.incremental = true
 	loader.addProjectReferenceTasks(singleThreaded)
 	loader.resolver = module.NewResolver(loader.projectReferenceFileMapper.host, opts.Config.CompilerOptions(), opts.TypingsLocation, opts.ProjectName)
-	for index, rootFile := range addedRootFiles {
-		loader.addRootFileTask(rootFile, nil, &FileIncludeReason{kind: fileIncludeKindRootFile, data: firstAddedRootIndex + index})
+	for _, rootFile := range addedRootFiles {
+		loader.addRootFileTask(rootFile, nil, &FileIncludeReason{kind: fileIncludeKindRootFile, data: rootFile})
 	}
 
 	loader.filesParser.parse(&loader, loader.rootTasks)
@@ -176,10 +201,123 @@ func processAddedRootFiles(
 	loader.projectReferenceFileMapper.host = nil
 
 	if loader.gaveUp.Load() {
-		return processedFiles{}, loader.acquired, false
+		return processedFiles{}, loader.acquired, nil, false
 	}
 	files = loader.filesParser.getProcessedFiles(&loader)
-	return files, loader.acquired, !loader.gaveUp.Load()
+	return files, loader.acquired, loader.newFiles, !loader.gaveUp.Load()
+}
+
+// removedRoots names the root files a program is being built without, by the names the
+// config gave them and by the paths those name. It is empty for an addition that takes
+// nothing away.
+type removedRoots struct {
+	names collections.Set[string]
+	paths collections.Set[tspath.Path]
+}
+
+func (r *removedRoots) isEmpty() bool {
+	return r == nil || r.paths.Len() == 0
+}
+
+func (r *removedRoots) hasPath(path tspath.Path) bool {
+	return r != nil && r.paths.Has(path)
+}
+
+// canRemoveRoots reports whether base is the program a build from scratch would give
+// once the named roots are simply left out of it, and returns what each file's include
+// reasons become when it is. A false return leaves the caller to build the program.
+//
+// What makes a removal harder than an addition is that a file leaving can change what
+// other files resolve to: a file that resolved to it has to resolve again, and may land
+// on a copy under node_modules, on a file sharing its stem, or on nothing. It can also
+// move files that are staying, since where a file sits in the program is decided by the
+// first thing that reached it, and a removed file may have been that.
+//
+// Both of those are the same condition, and it is checked rather than reasoned about:
+// nothing that is staying may owe its place to something that is going. Concretely,
+//
+//   - every reason each removed root is in the program is a root file reason for one of
+//     the roots being removed, so no file resolved to it, referenced it, or named it as
+//     a type library — a removal cannot make a lookup that failed succeed, so nothing
+//     else has to resolve again; and
+//   - no file that is staying has a removed file as the *first* of its include reasons,
+//     which is the reason that placed it. A removed root's walk therefore brought
+//     nothing into the program but itself, and every other file keeps the place a
+//     rebuild would give it.
+//
+// The rest are the ways a file is more than its place in the list: a lib file, which is
+// sorted ahead of everything else; a file the base only found by searching node_modules;
+// a file the base holds under a different name; a duplicate, whose parse cache
+// accounting is worked out over the whole walk; and a diagnostic the parse produced
+// about a file that is going.
+func canRemoveRoots(base *processedFiles, removed *removedRoots) (map[tspath.Path][]*FileIncludeReason, bool) {
+	if len(base.duplicateSourceFiles) > 0 {
+		return nil, false
+	}
+	for path := range removed.paths.Keys() {
+		existing, ok := base.filesByPath[path]
+		if !ok {
+			return nil, false
+		}
+		if _, isLib := base.libFiles[path]; isLib {
+			return nil, false
+		}
+		if base.sourceFilesFoundSearchingNodeModules.Has(path) {
+			return nil, false
+		}
+		if base.filesByLowerCasePath != nil {
+			// on a case sensitive file system the index holds the first path of each
+			// casing, so a removal that is not the one indexed would take another
+			// file's entry with it
+			if indexed, ok := base.filesByLowerCasePath[tspath.ToFileNameLowerCase(string(path))]; !ok || indexed != path {
+				return nil, false
+			}
+		}
+		if !removed.names.Has(existing.FileName()) {
+			// the program holds it under a name none of the removed roots gave it,
+			// so something else means it to be here under that name
+			return nil, false
+		}
+		for _, reason := range base.includeProcessor.fileIncludeReasons[path] {
+			if reason.kind != fileIncludeKindRootFile || !removed.names.Has(reason.asRootFileName()) {
+				return nil, false
+			}
+		}
+	}
+	for _, diagnostic := range base.includeProcessor.processingDiagnostics {
+		if diagnostic.mentionsAnyOf(removed) {
+			return nil, false
+		}
+	}
+	reasons := make(map[tspath.Path][]*FileIncludeReason, len(base.includeProcessor.fileIncludeReasons))
+	for path, fileReasons := range base.includeProcessor.fileIncludeReasons {
+		if removed.hasPath(path) {
+			continue
+		}
+		kept := fileReasons
+		for i, reason := range fileReasons {
+			if !reason.isReferencedFile() || !removed.hasPath(reason.asReferencedFileData().file) {
+				continue
+			}
+			if i == 0 {
+				// a removed file is what put this one in the program, so a rebuild
+				// would reach it from somewhere else and could place it elsewhere
+				return nil, false
+			}
+			if len(kept) == len(fileReasons) {
+				kept = slices.Clip(fileReasons[:i])
+			}
+		}
+		if len(kept) != len(fileReasons) {
+			for _, reason := range fileReasons[len(kept):] {
+				if !reason.isReferencedFile() || !removed.hasPath(reason.asReferencedFileData().file) {
+					kept = append(kept, reason)
+				}
+			}
+		}
+		reasons[path] = kept
+	}
+	return reasons, true
 }
 
 func processAllProgramFiles(
@@ -194,8 +332,8 @@ func processAllProgramFiles(
 	if opts.Tracing != nil {
 		defer opts.Tracing.Push(tracing.PhaseProgram, "processRootFiles", map[string]any{"count": len(rootFiles)}, false)()
 	}
-	for index, rootFile := range rootFiles {
-		loader.addRootFileTask(rootFile, nil, &FileIncludeReason{kind: fileIncludeKindRootFile, data: index})
+	for _, rootFile := range rootFiles {
+		loader.addRootFileTask(rootFile, nil, &FileIncludeReason{kind: fileIncludeKindRootFile, data: rootFile})
 	}
 	if len(rootFiles) > 0 && compilerOptions.NoLib.IsFalseOrUnknown() {
 		if compilerOptions.Lib == nil {

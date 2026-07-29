@@ -307,13 +307,13 @@ func TestAddRootFilesProbe(t *testing.T) {
 			base.CommonSourceDirectory()
 			before := programFingerprint(base)
 
-			added, _, ok := base.AddRootFiles(
+			added, _, ok := base.UpdateRootFiles(
 				newTestConfig(options, allRoots),
 				nil,
 				base.Host(),
 				nil,
 			)
-			assert.Equal(t, ok, testCase.addable, "AddRootFiles")
+			assert.Equal(t, ok, testCase.addable, "UpdateRootFiles")
 			// whatever happened, the program that was added to must still answer
 			// exactly as it did before
 			assert.Equal(t, programFingerprint(base), before, "base program mutated")
@@ -410,8 +410,8 @@ func TestAddRootFilesChained(t *testing.T) {
 			files[name] = fmt.Sprintf("import { a } from %q; export const x = a;", "./a")
 		}
 		roots = append(roots, added...)
-		next, _, ok := program.AddRootFiles(newTestConfig(options, roots), nil, newTestHost(files), nil)
-		assert.Assert(t, ok, "AddRootFiles %v", added)
+		next, _, ok := program.UpdateRootFiles(newTestConfig(options, roots), nil, newTestHost(files), nil)
+		assert.Assert(t, ok, "UpdateRootFiles %v", added)
 		assertChangedPathsAreTheDiff(t, program, next)
 		assertProgramsEquivalent(t, next, newTestProgram(files, options, roots))
 		program = next
@@ -441,7 +441,7 @@ func TestAddRootFilesReplacesSeveralChangedFiles(t *testing.T) {
 	edited["/p/a.ts"] = "export const a = 1;\nclass A {}\n"
 	edited["/p/b.ts"] = "export const b = 2;\nclass B {}\n"
 
-	added, _, ok := base.AddRootFiles(
+	added, _, ok := base.UpdateRootFiles(
 		newTestConfig(options, []string{"/p/a.ts", "/p/b.ts", "/p/c.ts"}),
 		[]tspath.Path{"/p/a.ts", "/p/b.ts"},
 		newTestHost(edited),
@@ -456,27 +456,35 @@ func TestAddRootFilesReplacesSeveralChangedFiles(t *testing.T) {
 }
 
 // assertChangedPathsAreTheDiff checks what a program built from another says it
-// changed against comparing the two file maps outright, which is what the API session
-// reports to the client when a program cannot say. The two have to name the same
-// files, and the derived program must hold every file the base did, since the client
-// is told nothing was taken away.
+// changed and took away against comparing the two file maps outright, which is what
+// the API session reports to the client when a program cannot say. The two have to
+// name the same files.
 func assertChangedPathsAreTheDiff(t *testing.T, base *Program, derived *Program) {
 	t.Helper()
-	reported, ok := derived.FilesChangedFrom(base)
+	reportedChanged, reportedRemoved, ok := derived.FilesChangedFrom(base)
 	assert.Assert(t, ok, "the derived program could not say what it changed")
-	var diff []string
+	var changed, removed []string
 	for path, file := range base.filesByPath {
 		now, held := derived.filesByPath[path]
-		assert.Assert(t, held, "the derived program dropped %s", path)
-		if now != file {
-			diff = append(diff, string(path))
+		if !held {
+			removed = append(removed, string(path))
+		} else if now != file {
+			changed = append(changed, string(path))
 		}
 	}
-	said := make([]string, 0, len(reported))
-	for _, path := range reported {
-		said = append(said, string(path))
+	assert.Equal(t, joinSortedPaths(reportedChanged), joinSorted(changed), "changed paths")
+	assert.Equal(t, joinSortedPaths(reportedRemoved), joinSorted(removed), "removed paths")
+}
+
+func joinSortedPaths(paths []tspath.Path) string {
+	names := make([]string, 0, len(paths))
+	for _, path := range paths {
+		names = append(names, string(path))
 	}
-	slices.Sort(diff)
-	slices.Sort(said)
-	assert.Equal(t, strings.Join(said, ", "), strings.Join(diff, ", "), "changed paths")
+	return joinSorted(names)
+}
+
+func joinSorted(names []string) string {
+	slices.Sort(names)
+	return strings.Join(names, ", ")
 }

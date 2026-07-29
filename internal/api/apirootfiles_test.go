@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -194,6 +195,82 @@ func TestAPIRootsAreReportedByGetProjectRootFiles(t *testing.T) {
 	proj := s.project.Snapshot().ProjectCollection.ConfiguredProject(addRootsConfigFileName)
 	assert.Assert(t, proj != nil)
 	assert.DeepEqual(t, proj.RootFileNames(), []string{"/p/a.ts", "/p/b.ts"})
+}
+
+// TestAPIRootsRollingCreateAndDelete drives the whole session through the loop this
+// exists for — a file created and a file dropped on every step — and checks the program
+// against one opened with the same files, every step, as well as that it was derived
+// from the one before it rather than built again.
+func TestAPIRootsRollingCreateAndDelete(t *testing.T) {
+	t.Parallel()
+	if !bundled.Embedded {
+		t.Skip("bundled files are not embedded")
+	}
+
+	files := map[string]string{}
+	for i := range 4 {
+		files[fmt.Sprintf("/p/b%d.ts", i)] = fmt.Sprintf("export const v%d = %d;", i, i)
+	}
+	s := newAPIRootsSession(t, files)
+	defer s.close()
+
+	for i := range 6 {
+		added := fmt.Sprintf("/p/c%d.ts", i)
+		text := fmt.Sprintf("export const w%d = %d;", i, i)
+		dropped := s.roots[0]
+
+		s.write(added, text)
+		files[added] = text
+		_ = s.utils.FS().Remove(dropped)
+		delete(files, dropped)
+
+		s.pendingRoots = []string{added}
+		s.removedRoots = []string{dropped}
+		s.roots = slices.Concat(s.roots[1:], []string{added})
+		s.update(t, &APIFileChanges{
+			Created: identifiers(added),
+			Deleted: identifiers(dropped),
+		})
+
+		assert.Assert(t, s.reusedProgram, "step %d built the program again", i)
+		assert.DeepEqual(t, projectFileNames(t, s), s.roots)
+
+		atOnce := newAPIRootsSessionWithRoots(t, files, s.roots)
+		assert.Equal(t, explainProgram(s.program(t)), explainProgram(atOnce.program(t)), "explained files at step %d", i)
+		assert.Equal(t, programDiagnostics(t, s.program(t)), programDiagnostics(t, atOnce.program(t)), "diagnostics at step %d", i)
+		atOnce.close()
+	}
+}
+
+// TestAPIRootsRefuseARemovalSomethingStillWants is the case the whole refusal exists
+// for: a file another file imports leaves the root list but stays where it is, so the
+// import goes on resolving to it and it goes on being in the program.
+func TestAPIRootsRefuseARemovalSomethingStillWants(t *testing.T) {
+	t.Parallel()
+	if !bundled.Embedded {
+		t.Skip("bundled files are not embedded")
+	}
+
+	s := newAPIRootsSession(t, map[string]string{
+		"/p/a.ts":   `import { dep } from "./dep"; export const a = dep;`,
+		"/p/dep.ts": `export const dep = 3;`,
+	})
+	defer s.close()
+
+	s.removedRoots = []string{"/p/dep.ts"}
+	s.roots = []string{"/p/a.ts"}
+	s.update(t, nil)
+
+	assert.Assert(t, !s.reusedProgram, "the program was not built again")
+	// still in the program, because a.ts still imports it
+	assert.DeepEqual(t, projectFileNames(t, s), []string{"/p/dep.ts", "/p/a.ts"})
+
+	atOnce := newAPIRootsSessionWithRoots(t, map[string]string{
+		"/p/a.ts":   `import { dep } from "./dep"; export const a = dep;`,
+		"/p/dep.ts": `export const dep = 3;`,
+	}, []string{"/p/a.ts"})
+	defer atOnce.close()
+	assert.Equal(t, explainProgram(s.program(t)), explainProgram(atOnce.program(t)))
 }
 
 // newAPIRootsSessionWithConfig is newAPIRootsSession with a config the caller wrote.

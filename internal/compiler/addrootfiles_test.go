@@ -256,13 +256,13 @@ func TestAddRootFilesMatchesRebuild(t *testing.T) {
 			base.verifyCompilerOptions()
 			base.CommonSourceDirectory()
 
-			added, _, ok := base.AddRootFiles(
+			added, _, ok := base.UpdateRootFiles(
 				newTestConfig(options, allRoots),
 				nil,
 				base.Host(),
 				nil,
 			)
-			assert.Equal(t, ok, testCase.addable, "AddRootFiles")
+			assert.Equal(t, ok, testCase.addable, "UpdateRootFiles")
 			if !ok {
 				return
 			}
@@ -293,7 +293,7 @@ func TestAddRootFilesReplacesChangedFiles(t *testing.T) {
 	edited["/p/a.ts"] = "export const a = 1;\n\nclass C {\n}\n"
 	host := newTestHost(edited)
 
-	added, _, ok := base.AddRootFiles(
+	added, _, ok := base.UpdateRootFiles(
 		newTestConfig(options, []string{"/p/a.ts", "/p/b.ts"}),
 		[]tspath.Path{"/p/a.ts"},
 		host,
@@ -326,7 +326,7 @@ func TestAddRootFilesRefusesChangedImports(t *testing.T) {
 	edited := maps.Clone(files)
 	edited["/p/a.ts"] = `import { dep } from "./dep"; export const a = dep;`
 
-	_, _, ok := base.AddRootFiles(
+	_, _, ok := base.UpdateRootFiles(
 		newTestConfig(options, []string{"/p/a.ts", "/p/b.ts"}),
 		[]tspath.Path{"/p/a.ts"},
 		newTestHost(edited),
@@ -336,7 +336,7 @@ func TestAddRootFilesRefusesChangedImports(t *testing.T) {
 }
 
 // TestAddRootFilesRefusesADifferentConfig covers everything about a config that is
-// not a root file appended to the end of its list.
+// not a change to its root file list.
 func TestAddRootFilesRefusesADifferentConfig(t *testing.T) {
 	t.Parallel()
 	if !bundled.Embedded {
@@ -353,14 +353,14 @@ func TestAddRootFilesRefusesADifferentConfig(t *testing.T) {
 	refuses := map[string]*tsoptions.ParsedCommandLine{
 		"an option that differs":  newTestConfig(&core.CompilerOptions{ConfigFilePath: "/p/tsconfig.json", Strict: core.TSTrue}, []string{"/p/a.ts", "/p/b.ts"}),
 		"a root inserted first":   newTestConfig(options, []string{"/p/b.ts", "/p/a.ts"}),
-		"no root added":           newTestConfig(options, []string{"/p/a.ts"}),
-		"a root removed":          newTestConfig(options, []string{"/p/b.ts"}),
+		"nothing changed":         newTestConfig(options, []string{"/p/a.ts"}),
+		"every root removed":      newTestConfig(options, []string{}),
 		"the same roots reprefix": newTestConfig(options, []string{"/p/A.ts", "/p/a.ts", "/p/b.ts"}),
 	}
 	for name, config := range refuses {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			_, _, ok := base.AddRootFiles(config, nil, base.Host(), nil)
+			_, _, ok := base.UpdateRootFiles(config, nil, base.Host(), nil)
 			assert.Assert(t, !ok)
 		})
 	}
@@ -394,8 +394,8 @@ func assertProgramsEquivalent(t *testing.T, added *Program, rebuilt *Program) {
 	// the program has worked out about where it came from
 	assert.Equal(t, explainFiles(added), explainFiles(rebuilt), "explained files")
 	// explained files renders a reason but not the data behind it, and a root file's
-	// data is its index in the config's file list, which is what a diagnostic about
-	// it points at
+	// data is the name the config's file list gave it, which is what a diagnostic
+	// about it points at
 	assert.Equal(t, describeIncludeReasons(added), describeIncludeReasons(rebuilt), "include reasons")
 	assert.Equal(t, describeResolutions(added), describeResolutions(rebuilt), "resolutions")
 	assert.Equal(t, describeMetadata(added), describeMetadata(rebuilt), "file metadata")

@@ -60,13 +60,20 @@ type Project struct {
 	configFilePath   tspath.Path
 
 	dirty bool
-	// dirtyFiles are the files whose text changed since Program was built, and they
-	// only describe the project's dirtiness while dirtyFilesKnown. That goes false as
-	// soon as a change arrives that no list of files accounts for — a deletion, a
-	// package.json, a file the program looked for and did not find — because each of
-	// those changes what the files around it mean, and the program has to be built
-	// again rather than have those files swapped in it.
+	// dirtyFiles are the files whose text changed since Program was built and
+	// deletedFiles the ones that went away, and they only describe the project's
+	// dirtiness while dirtyFilesKnown. That goes false as soon as a change arrives
+	// that no list of files accounts for — a package.json, a file the program looked
+	// for and did not find — because each of those changes what the files around it
+	// mean, and the program has to be built again rather than have those files
+	// swapped in it.
+	//
+	// A deletion is listed apart from the rest because it is only ever answerable
+	// together with the root file list: a file the program holds may leave it only by
+	// being dropped as a root in the same update, which is what says nothing else was
+	// relying on it. See Project.updateRootFilesInProgram.
 	dirtyFiles      []tspath.Path
+	deletedFiles    []tspath.Path
 	dirtyFilesKnown bool
 
 	host                            *compilerHost
@@ -260,6 +267,7 @@ func (p *Project) Clone() *Project {
 
 		dirty:           p.dirty,
 		dirtyFiles:      p.dirtyFiles,
+		deletedFiles:    p.deletedFiles,
 		dirtyFilesKnown: p.dirtyFilesKnown,
 
 		host:                        p.host,
@@ -428,7 +436,7 @@ func (p *Project) CreateProgram() CreateProgramResult {
 	// Create the command line, potentially augmented with typing files and API root files
 	commandLine := p.effectiveCommandLine()
 
-	if p.dirtyFilesKnown && len(p.dirtyFiles) == 1 && p.Program != nil && p.Program.CommandLine() == commandLine {
+	if p.dirtyFilesKnown && len(p.dirtyFiles) == 1 && len(p.deletedFiles) == 0 && p.Program != nil && p.Program.CommandLine() == commandLine {
 		var dirtyFile *ast.SourceFile
 		newProgram, dirtyFile, programCloned = p.Program.UpdateProgram(p.dirtyFiles[0], p.host, createCheckerPool)
 		if programCloned {
@@ -450,10 +458,10 @@ func (p *Project) CreateProgram() CreateProgramResult {
 			// speculative acquire so the rebuilt program is the only remaining owner.
 			p.host.builder.parseCache.Deref(NewParseCacheKey(dirtyFile.ParseOptions(), dirtyFile.Hash, dirtyFile.ScriptKind))
 		}
-	} else if added := p.addRootFilesToProgram(commandLine, createCheckerPool); added != nil {
-		// the file set is known to have grown, so it stays ProgramUpdateKindNewFiles
-		// and there is nothing for HasSameFileNames to tell us
-		newProgram = added
+	} else if derived := p.updateRootFilesInProgram(commandLine, createCheckerPool); derived != nil {
+		// the file set is known to differ, so it stays ProgramUpdateKindNewFiles and
+		// there is nothing for HasSameFileNames to tell us
+		newProgram = derived
 		fileNamesKnownToDiffer = true
 	} else {
 		var typingsLocation string
@@ -483,32 +491,34 @@ func (p *Project) CreateProgram() CreateProgramResult {
 	}
 }
 
-// addRootFilesToProgram builds the next program by adding the root files the new
-// command line names beyond the ones the current program was built from, rather than
-// building it again. It returns nil when that cannot be done, which leaves the caller
-// to build one, and is what happens whenever the command line changed for any other
-// reason — the compiler options, a project reference, roots that moved rather than
-// arrived — or whenever the addition would not produce the same program a build from
-// scratch would have.
+// updateRootFilesInProgram builds the next program by changing the root files of the
+// current one — adding the ones the new command line names beyond it and dropping the
+// ones it no longer names — rather than building it again. It returns nil when that
+// cannot be done, which leaves the caller to build one, and is what happens whenever the
+// command line changed for any other reason — the compiler options, a project reference,
+// roots that moved rather than arrived or left — or whenever the change would not
+// produce the same program a build from scratch would have.
 //
-// The condition the compiler cannot check is here: an added file must be one no file
+// Two conditions the compiler cannot check are here. An added file must be one no file
 // already in the program went looking for, because a build from scratch would resolve
-// that lookup to it now and the file that made it would mean something different.
-// That is asked of the previous program's host, which recorded every path it read or
-// probed, and it is asked before the new host is given that record to add to.
-func (p *Project) addRootFilesToProgram(
+// that lookup to it now and the file that made it would mean something different; that
+// is asked of the previous program's host, which recorded every path it read or probed,
+// and it is asked before the new host is given that record to add to. And a file the
+// program holds may only go away by being dropped as a root in the same update: one that
+// vanished from the file system while the project still names it is a program that has
+// to be built again, since what its name means now is a question about the file system
+// rather than about the program.
+func (p *Project) updateRootFilesInProgram(
 	commandLine *tsoptions.ParsedCommandLine,
 	createCheckerPool func(*compiler.Program) compiler.CheckerPool,
 ) *compiler.Program {
 	if p.Program == nil || !p.dirtyFilesKnown {
 		return nil
 	}
-	oldRootFileNames := p.Program.CommandLine().FileNames()
-	newRootFileNames := commandLine.FileNames()
-	if len(newRootFileNames) <= len(oldRootFileNames) {
+	addedRootFileNames, removedRootFileNames, ok := p.Program.RootFileChangesFrom(commandLine)
+	if !ok {
 		return nil
 	}
-	addedRootFileNames := newRootFileNames[len(oldRootFileNames):]
 	oldHost, ok := p.Program.Host().(*compilerHost)
 	if !ok || oldHost.sourceFS.seenFiles == nil || p.host.sourceFS.seenFiles == nil {
 		return nil
@@ -518,12 +528,23 @@ func (p *Project) addRootFilesToProgram(
 			return nil
 		}
 	}
+	if len(p.deletedFiles) > 0 {
+		var removedRootPaths collections.Set[tspath.Path]
+		for _, fileName := range removedRootFileNames {
+			removedRootPaths.Add(p.toPath(fileName))
+		}
+		for _, path := range p.deletedFiles {
+			if !removedRootPaths.Has(path) {
+				return nil
+			}
+		}
+	}
 
-	newProgram, acquired, ok := p.Program.AddRootFiles(commandLine, p.dirtyFiles, p.host, createCheckerPool)
+	newProgram, acquired, ok := p.Program.UpdateRootFiles(commandLine, p.dirtyFiles, p.host, createCheckerPool)
 	if ok {
 		for _, file := range acquired {
 			// the files that replaced changed ones were already in the program, so
-			// only the ones this addition brought in have to be new to it
+			// only the ones this walk brought in have to be new to it
 			if !slices.Contains(p.dirtyFiles, file.Path()) && oldHost.sourceFS.SeenFileOrMissingParentDirectory(file.Path()) {
 				ok = false
 				break
@@ -552,7 +573,7 @@ func (p *Project) addRootFilesToProgram(
 		p.host.builder.parseCache.Ref(NewParseCacheKey(file.ParseOptions, file.Hash, file.ScriptKind))
 	}
 
-	// the new host has only read what the addition needed, and the program depends on
+	// the new host has only read what the change needed, and the program depends on
 	// everything the one before it read, so the two records become one
 	p.host.sourceFS.seenFiles.Range(func(path tspath.Path) bool {
 		oldHost.sourceFS.seenFiles.Add(path)

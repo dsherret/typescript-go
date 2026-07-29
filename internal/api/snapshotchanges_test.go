@@ -99,7 +99,7 @@ func TestSnapshotChangesMatchTheFileMapDiff(t *testing.T) {
 			name:  "a file deleted",
 			files: map[string]string{"/p/a.ts": "export const a = 1;", "/p/b.ts": "export const b = 2;"},
 			steps: []snapshotChangeStep{
-				{remove: []string{"/p/b.ts"}, dropRoots: []string{"/p/b.ts"}, deleted: []string{"/p/b.ts"}},
+				{remove: []string{"/p/b.ts"}, dropRoots: []string{"/p/b.ts"}, deleted: []string{"/p/b.ts"}, derived: true},
 			},
 		},
 		{
@@ -124,6 +124,7 @@ func TestSnapshotChangesMatchTheFileMapDiff(t *testing.T) {
 					created:   []string{"/p/d.ts"},
 					changed:   []string{"/p/a.ts"},
 					deleted:   []string{"/p/c.ts"},
+					derived:   true,
 				},
 			},
 		},
@@ -345,7 +346,7 @@ func (s *snapshotChangesSession) tookFastPath(prev *project.Snapshot, next *proj
 	if oldProj == nil || newProj == nil || oldProj.GetProgram() == newProj.GetProgram() {
 		return false
 	}
-	_, ok := newProj.GetProgram().FilesChangedFrom(oldProj.GetProgram())
+	_, _, ok := newProj.GetProgram().FilesChangedFrom(oldProj.GetProgram())
 	return ok
 }
 

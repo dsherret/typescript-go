@@ -329,6 +329,14 @@ func (w *filesParser) start(loader *fileLoader, tasks []*parseTask, depth int) {
 // found is worked out over the whole walk and decides whether the program counts it
 // as coming from a library.
 func (w *filesParser) stopAtExistingFile(loader *fileLoader, task *parseTask, depth int) bool {
+	if loader.removed.hasPath(task.path) {
+		// an added root reached a file the same update takes away. What a rebuild
+		// would do with it depends on whether the file is still on disk and where
+		// else it could be reached from, which is the whole of what a removal is
+		// only sound for avoiding — so build the program instead.
+		loader.giveUp()
+		return false
+	}
 	existing, ok := loader.base.filesByPath[task.path]
 	if !ok {
 		if task.libFile != nil {
@@ -415,6 +423,23 @@ func (w *filesParser) getProcessedFiles(loader *fileLoader) processedFiles {
 		includeProcessor.processingDiagnostics = slices.Clip(base.includeProcessor.processingDiagnostics)
 		missingFiles = slices.Clip(base.missingFiles)
 		duplicateSourceFiles = slices.Clip(base.duplicateSourceFiles)
+		// the removed roots leave the copies rather than the base's own maps, and
+		// every one of them is a file canRemoveRoots established nothing else in the
+		// program asked for, so nothing but their own entries goes with them
+		if !loader.removed.isEmpty() {
+			includeProcessor.fileIncludeReasons = loader.fileIncludeReasonsWithoutRemoved
+			for path := range loader.removed.paths.Keys() {
+				delete(filesByPath, path)
+				delete(resolvedModules, path)
+				delete(typeResolutionsInFile, path)
+				delete(sourceFileMetaDatas, path)
+				delete(jsxRuntimeImportSpecifiers, path)
+				delete(importHelpersImportSpecifiers, path)
+				if filesByLowerCasePath != nil {
+					delete(filesByLowerCasePath, tspath.ToFileNameLowerCase(string(path)))
+				}
+			}
+		}
 	}
 
 	var collectFiles func(tasks []*parseTask, seen map[*parseTaskData]string)
@@ -624,9 +649,18 @@ func (w *filesParser) getProcessedFiles(loader *fileLoader) processedFiles {
 		// the added roots reached these files, so they belong where a build from
 		// scratch would have put them: after every file the roots before them
 		// reached, and before the ones an automatic type directive brought in
-		allFiles = slices.Concat(base.files[:base.rootFilesEnd], files, base.files[base.rootFilesEnd:])
+		fromRoots := base.files[:base.rootFilesEnd]
+		if !loader.removed.isEmpty() {
+			// every removed root is one nothing else in the program reached, so the
+			// files that stay keep the order they were in
+			fromRoots = slices.DeleteFunc(slices.Clone(fromRoots), func(file *ast.SourceFile) bool {
+				return loader.removed.hasPath(file.Path())
+			})
+		}
+		allFiles = slices.Concat(fromRoots, files, base.files[base.rootFilesEnd:])
 		libFileTotal = base.libFileCount
-		rootFilesEnd = base.rootFilesEnd + len(files)
+		rootFilesEnd = len(fromRoots) + len(files)
+		loader.newFiles = files
 	} else {
 		allFiles = append(libFiles, files...)
 	}

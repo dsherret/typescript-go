@@ -313,6 +313,7 @@ func (b *ProjectCollectionBuilder) DidChangeFiles(summary FileChangeSummary, log
 			entry.Change(func(p *Project) {
 				p.dirty = true
 				p.dirtyFiles = nil
+				p.deletedFiles = nil
 				p.dirtyFilesKnown = false
 				if logger != nil {
 					logger.Logf("Marking project as dirty due to excessive watch changes: %s", p.configFilePath)
@@ -695,6 +696,7 @@ func (b *ProjectCollectionBuilder) DidUpdateATAState(ataChanges map[tspath.Path]
 				p.typingsWatch = p.typingsWatch.Clone(typingsWatchGlobs)
 				p.dirty = true
 				p.dirtyFiles = nil
+				p.deletedFiles = nil
 				p.dirtyFilesKnown = false
 			},
 		)
@@ -1192,6 +1194,7 @@ func (b *ProjectCollectionBuilder) updateProgram(entry dirty.Value[*Project], lo
 				}
 				project.dirty = false
 				project.dirtyFiles = nil
+				project.deletedFiles = nil
 				project.dirtyFilesKnown = true
 				b.releaseDroppedProjectReferences(oldProgram, result.Program, project.configFilePath)
 				if oldCheckerPool != nil {
@@ -1220,6 +1223,7 @@ const maxDirtyFilesTracked = 8
 func (b *ProjectCollectionBuilder) markFilesChanged(entry dirty.Value[*Project], paths []tspath.Path, changeType lsproto.FileChangeType, logger *logging.LogTree) {
 	var dirty bool
 	var dirtyFiles []tspath.Path
+	var deletedFiles []tspath.Path
 	var dirtyFilesKnown bool
 	entry.ChangeIf(
 		func(p *Project) bool {
@@ -1228,20 +1232,31 @@ func (b *ProjectCollectionBuilder) markFilesChanged(entry dirty.Value[*Project],
 			}
 
 			dirtyFiles = p.dirtyFiles
+			deletedFiles = p.deletedFiles
 			dirtyFilesKnown = p.dirtyFilesKnown
 			for _, path := range paths {
 				if p.containsFile(path) {
 					dirty = true
-					if changeType == lsproto.FileChangeTypeDeleted {
-						dirtyFilesKnown = false
-						break
-					}
 					// package.json changes can affect module resolution and package
 					// identity (e.g. dedup decisions), so they must always trigger
 					// a full rebuild rather than a single-file clone.
 					if tspath.GetBaseFileName(string(path)) == "package.json" {
 						dirtyFilesKnown = false
 						break
+					}
+					if changeType == lsproto.FileChangeTypeDeleted {
+						// a deleted file is only answerable together with the root
+						// file list, which arrives later in the same update — see
+						// Project.updateRootFilesInProgram
+						if len(deletedFiles) == maxDirtyFilesTracked {
+							dirtyFilesKnown = false
+							break
+						}
+						if !slices.Contains(deletedFiles, path) {
+							// clipped because the project this list came from is still using it
+							deletedFiles = append(slices.Clip(deletedFiles), path)
+						}
+						continue
 					}
 					if len(dirtyFiles) == maxDirtyFilesTracked {
 						dirtyFilesKnown = false
@@ -1261,12 +1276,14 @@ func (b *ProjectCollectionBuilder) markFilesChanged(entry dirty.Value[*Project],
 			}
 			if !dirtyFilesKnown {
 				dirtyFiles = nil
+				deletedFiles = nil
 			}
-			return dirty || dirtyFilesKnown != p.dirtyFilesKnown || len(dirtyFiles) != len(p.dirtyFiles)
+			return dirty || dirtyFilesKnown != p.dirtyFilesKnown || len(dirtyFiles) != len(p.dirtyFiles) || len(deletedFiles) != len(p.deletedFiles)
 		},
 		func(p *Project) {
 			p.dirty = true
 			p.dirtyFiles = dirtyFiles
+			p.deletedFiles = deletedFiles
 			p.dirtyFilesKnown = dirtyFilesKnown
 			if logger != nil {
 				if len(dirtyFiles) > 0 {

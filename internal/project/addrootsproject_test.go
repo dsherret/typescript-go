@@ -40,8 +40,11 @@ func TestAddRootsProjectLevel(t *testing.T) {
 		added         map[string]string
 		// alsoChanged are files already in the project whose text changed in the
 		// same batch as the addition.
-		alsoChanged   map[string]string
-		alsoDeleted   []string
+		alsoChanged map[string]string
+		alsoDeleted []string
+		// alsoUnrooted are files dropped from the config's file list and left on the
+		// file system, where alsoDeleted are removed from both.
+		alsoUnrooted  []string
 		reusesProgram bool
 	}{
 		{
@@ -106,7 +109,69 @@ func TestAddRootsProjectLevel(t *testing.T) {
 			initial:       map[string]string{"/p/a.ts": `export const a = 1;`, "/p/dep.ts": `export const dep = 3;`},
 			added:         map[string]string{"/p/b.ts": `export const b = 2;`},
 			alsoDeleted:   []string{"/p/dep.ts"},
+			reusesProgram: true,
+		},
+		{
+			name:          "a file deleted on its own",
+			initial:       map[string]string{"/p/a.ts": `export const a = 1;`, "/p/dep.ts": `export const dep = 3;`},
+			alsoDeleted:   []string{"/p/dep.ts"},
+			reusesProgram: true,
+		},
+		{
+			name:          "a file deleted that another file imports",
+			initial:       map[string]string{"/p/a.ts": `import { dep } from "./dep"; export const a = dep;`, "/p/dep.ts": `export const dep = 3;`},
+			alsoDeleted:   []string{"/p/dep.ts"},
 			reusesProgram: false,
+		},
+		{
+			// the file is gone from the file system too, so the arriving import
+			// resolves to nothing and the walk never reaches what is leaving
+			name:          "a file deleted while a file that imports it arrives",
+			initial:       map[string]string{"/p/a.ts": `export const a = 1;`, "/p/dep.ts": `export const dep = 3;`},
+			added:         map[string]string{"/p/b.ts": `import { dep } from "./dep"; export const b = dep;`},
+			alsoDeleted:   []string{"/p/dep.ts"},
+			reusesProgram: true,
+		},
+		{
+			name:          "a file dropped from the roots and left where it is",
+			initial:       map[string]string{"/p/a.ts": `export const a = 1;`, "/p/dep.ts": `export const dep = 3;`},
+			alsoUnrooted:  []string{"/p/dep.ts"},
+			reusesProgram: true,
+		},
+		{
+			// this one the arriving import does reach, and what it means there is a
+			// question about the whole file system rather than about the program
+			name:          "a file dropped from the roots while a file that imports it arrives",
+			initial:       map[string]string{"/p/a.ts": `export const a = 1;`, "/p/dep.ts": `export const dep = 3;`},
+			added:         map[string]string{"/p/b.ts": `import { dep } from "./dep"; export const b = dep;`},
+			alsoUnrooted:  []string{"/p/dep.ts"},
+			reusesProgram: false,
+		},
+		{
+			name:          "a file deleted while another is edited and a third arrives",
+			initial:       map[string]string{"/p/a.ts": `export const a = 1;`, "/p/dep.ts": `export const dep = 3;`},
+			added:         map[string]string{"/p/b.ts": `export const b = 2;`},
+			alsoChanged:   map[string]string{"/p/a.ts": "export const a = 1;\nclass A {}\n"},
+			alsoDeleted:   []string{"/p/dep.ts"},
+			reusesProgram: true,
+		},
+		{
+			name:          "a file deleted that a declaration file shares a stem with",
+			initial:       map[string]string{"/p/a.ts": `import { s } from "./s"; export const a = s;`, "/p/s.ts": `export const s = 1;`, "/p/s.d.ts": `export declare const s: string;`},
+			alsoDeleted:   []string{"/p/s.d.ts"},
+			reusesProgram: true,
+		},
+		{
+			name:          "the implementation a declaration file shares a stem with",
+			initial:       map[string]string{"/p/a.ts": `import { s } from "./s"; export const a = s;`, "/p/s.ts": `export const s = 1;`, "/p/s.d.ts": `export declare const s: string;`},
+			alsoDeleted:   []string{"/p/s.ts"},
+			reusesProgram: false,
+		},
+		{
+			name:          "a file deleted that a package under node_modules would be found instead of",
+			initial:       map[string]string{"/p/a.ts": `import { p } from "pkg"; export const a = p;`, "/p/node_modules/pkg/package.json": `{"name":"pkg","version":"1.0.0","types":"index.d.ts"}`, "/p/node_modules/pkg/index.d.ts": `export declare const p: number;`, "/p/other.ts": `export const other = 1;`},
+			alsoDeleted:   []string{"/p/other.ts"},
+			reusesProgram: true,
 		},
 		{
 			name:          "a file reached under two casings where casing does not distinguish files",
@@ -147,7 +212,9 @@ func TestAddRootsProjectLevel(t *testing.T) {
 				changes.Deleted.Add(addRootsURI(name))
 			}
 			roots = append(roots, addRootsRootNames(testCase.added)...)
-			roots = slices.DeleteFunc(roots, func(name string) bool { return slices.Contains(testCase.alsoDeleted, name) })
+			roots = slices.DeleteFunc(roots, func(name string) bool {
+				return slices.Contains(testCase.alsoDeleted, name) || slices.Contains(testCase.alsoUnrooted, name)
+			})
 			assert.NilError(t, fs.WriteFile(addRootsConfigFile, addRootsConfigJSON(roots)))
 			changes.Changed.Add(addRootsURI(addRootsConfigFile))
 			changes.IncludesWatchChangeOutsideNodeModules = true
