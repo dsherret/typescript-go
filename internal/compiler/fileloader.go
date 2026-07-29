@@ -182,6 +182,14 @@ func processRootFileChanges(
 		loader.baseFilesAfterRoots.Add(file.Path())
 	}
 	if !removed.isEmpty() {
+		for path := range removed.paths.Keys() {
+			// a root's own file is always placed before the ones an automatic type
+			// directive brought in, so this cannot happen; asserting it costs a map
+			// lookup and is what the order below rests on
+			if loader.baseFilesAfterRoots.Has(path) {
+				return processedFiles{}, nil, nil, false
+			}
+		}
 		reasons, canRemove := canRemoveRoots(base, removed)
 		if !canRemove {
 			return processedFiles{}, nil, nil, false

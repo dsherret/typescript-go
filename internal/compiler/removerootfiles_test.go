@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/microsoft/typescript-go/internal/bundled"
+	"github.com/microsoft/typescript-go/internal/collections"
 	"github.com/microsoft/typescript-go/internal/core"
 	"github.com/microsoft/typescript-go/internal/tspath"
 	"gotest.tools/v3/assert"
@@ -169,6 +170,35 @@ func TestRemoveRootFilesMatchesRebuild(t *testing.T) {
 			initialRoots: []string{"/p/a.ts", "/p/node_modules/pkg/index.d.ts"},
 			removedRoots: []string{"/p/node_modules/pkg/index.d.ts"},
 			removable:    false,
+		},
+		{
+			// the whole hazard in one case: a.ts imports "pkg", which paths resolves to
+			// the root that is going, and a rebuild would find the node_modules copy
+			name: "a root a bare import resolves to instead of the node_modules copy",
+			files: map[string]string{
+				"/p/pkg.ts":                        `export const pkg = 1;`,
+				"/p/a.ts":                          `import { pkg } from "pkg"; export const a = pkg;`,
+				"/p/node_modules/pkg/package.json": `{"name":"pkg","version":"1.0.0","types":"index.d.ts"}`,
+				"/p/node_modules/pkg/index.d.ts":   `export declare const pkg: number;`,
+			},
+			options:      &core.CompilerOptions{ConfigFilePath: "/p/tsconfig.json", BaseUrl: "/p", Paths: removeRootsPkgPaths},
+			initialRoots: []string{"/p/pkg.ts", "/p/a.ts"},
+			removedRoots: []string{"/p/pkg.ts"},
+			removable:    false,
+		},
+		{
+			// the same shape with nothing importing it, which is safe and has to stay so
+			name: "a root a bare import would resolve to, that nothing imports",
+			files: map[string]string{
+				"/p/pkg.ts":                        `export const pkg = 1;`,
+				"/p/a.ts":                          `export const a = 1;`,
+				"/p/node_modules/pkg/package.json": `{"name":"pkg","version":"1.0.0","types":"index.d.ts"}`,
+				"/p/node_modules/pkg/index.d.ts":   `export declare const pkg: number;`,
+			},
+			options:      &core.CompilerOptions{ConfigFilePath: "/p/tsconfig.json", BaseUrl: "/p", Paths: removeRootsPkgPaths},
+			initialRoots: []string{"/p/pkg.ts", "/p/a.ts"},
+			removedRoots: []string{"/p/pkg.ts"},
+			removable:    true,
 		},
 		{
 			name: "a root that triple slash references a file only it reaches",
@@ -443,6 +473,35 @@ func TestRemoveRootFilesMatchesRebuild(t *testing.T) {
 	}
 }
 
+// TestRemoveRootFilesRefusesADroppedDuplicate covers a root list that names the same
+// file twice and drops one of the two. The file is not leaving the program — only one
+// of its reasons for being there is — and reading the list as a removal would take it
+// away entirely.
+func TestRemoveRootFilesRefusesADroppedDuplicate(t *testing.T) {
+	t.Parallel()
+	if !bundled.Embedded {
+		t.Skip("bundled files are not embedded")
+	}
+
+	files := map[string]string{
+		"/p/a.ts": `export const a = 1;`,
+		"/p/b.ts": `export const b = 2;`,
+	}
+	options := &core.CompilerOptions{ConfigFilePath: "/p/tsconfig.json"}
+	base := newTestProgram(files, options, []string{"/p/a.ts", "/p/b.ts", "/p/a.ts"})
+	base.verifyCompilerOptions()
+	base.CommonSourceDirectory()
+
+	_, _, ok := base.UpdateRootFiles(newTestConfig(options, []string{"/p/a.ts", "/p/b.ts"}), nil, base.Host(), nil)
+	assert.Assert(t, !ok)
+
+	// and the other way round: the same file named a second time is an addition that
+	// takes nothing away
+	added, _, ok := base.UpdateRootFiles(newTestConfig(options, []string{"/p/a.ts", "/p/b.ts", "/p/a.ts", "/p/b.ts"}), nil, base.Host(), nil)
+	assert.Assert(t, ok)
+	assertProgramsEquivalent(t, added, newTestProgram(files, options, []string{"/p/a.ts", "/p/b.ts", "/p/a.ts", "/p/b.ts"}))
+}
+
 // TestRemoveRootFilesWithChangedFiles covers what the ts-morph loop actually does:
 // a root leaving, a root arriving, and a file being edited, all in the same update.
 func TestRemoveRootFilesWithChangedFiles(t *testing.T) {
@@ -513,3 +572,11 @@ func TestRemoveRootFilesRolling(t *testing.T) {
 		program = next
 	}
 }
+
+// removeRootsPkgPaths maps a bare specifier onto a file in the project, so that an
+// import of it resolves to a root rather than to the copy under node_modules.
+var removeRootsPkgPaths = func() *collections.OrderedMap[string, []string] {
+	m := &collections.OrderedMap[string, []string]{}
+	m.Set("pkg", []string{"./pkg.ts"})
+	return m
+}()

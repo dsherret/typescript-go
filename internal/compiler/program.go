@@ -555,6 +555,14 @@ func (p *Program) diffRootFiles(newConfig *tsoptions.ParsedCommandLine) (*remove
 	if removed.names.Len() == 0 && len(added) == 0 {
 		return nil, nil, false
 	}
+	for _, name := range newRootFileNames {
+		// a name the new list still holds is not leaving, whatever the reading above
+		// made of it: the old list named it twice and one of the two went, which
+		// changes how many reasons its file has to be in the program and nothing else
+		if removed.names.Has(name) {
+			return nil, nil, false
+		}
+	}
 	return &removed, added, true
 }
 

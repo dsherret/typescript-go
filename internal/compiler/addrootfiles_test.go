@@ -414,6 +414,9 @@ func assertProgramsEquivalent(t *testing.T, added *Program, rebuilt *Program) {
 	assert.Equal(t, diagnosticsText(added.GetProgramDiagnostics()), diagnosticsText(rebuilt.GetProgramDiagnostics()))
 	assert.DeepEqual(t, sortedSet(&added.hasEmitBlockingDiagnostics), sortedSet(&rebuilt.hasEmitBlockingDiagnostics))
 	assert.Equal(t, semanticDiagnosticsText(t, added), semanticDiagnosticsText(t, rebuilt), "semantic diagnostics")
+	// every diagnostic the parse produced, including one about a file the program no
+	// longer holds, which nothing above would go looking for
+	assert.Equal(t, diagnosticsText(added.includeProcessor.getDiagnostics(added).GetDiagnostics()), diagnosticsText(rebuilt.includeProcessor.getDiagnostics(rebuilt).GetDiagnostics()), "include processor diagnostics")
 }
 
 func explainFiles(p *Program) string {
