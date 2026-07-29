@@ -3528,7 +3528,8 @@ func (sd *snapshotData) resolveNodeHandle(program *compiler.Program, handle Node
 
 // computeSnapshotChanges computes the per-project source file differences between
 // two snapshots. It uses DiffOrderedMaps on projects to find changed/removed projects,
-// then DiffMaps on FilesByPath for each changed project to collect file-level changes.
+// then asks each changed project's new program what it changed, falling back to
+// DiffMaps on FilesByPath when the program cannot say.
 func computeSnapshotChanges(prev *project.Snapshot, next *project.Snapshot) *SnapshotChanges {
 	prevProjects := prev.ProjectCollection.ProjectsByPath()
 	nextProjects := next.ProjectCollection.ProjectsByPath()
@@ -3545,27 +3546,34 @@ func computeSnapshotChanges(prev *project.Snapshot, next *project.Snapshot) *Sna
 		},
 		// onModified: project changed, diff its files.
 		func(_ tspath.Path, oldProj *project.Project, newProj *project.Project) {
-			if oldProj.GetProgram() == newProj.GetProgram() {
+			oldProgram, newProgram := oldProj.GetProgram(), newProj.GetProgram()
+			if oldProgram == newProgram {
 				return
 			}
-			var oldFiles, newFiles map[tspath.Path]*ast.SourceFile
-			if p := oldProj.GetProgram(); p != nil {
-				oldFiles = p.FilesByPath()
-			}
-			if p := newProj.GetProgram(); p != nil {
-				newFiles = p.FilesByPath()
-			}
 			var projectChanges ProjectFileChanges
-			core.DiffMaps(
-				oldFiles, newFiles,
-				nil, // onAdded: new file in project, not a change.
-				func(path tspath.Path, _ *ast.SourceFile) {
-					projectChanges.DeletedFiles = append(projectChanges.DeletedFiles, path)
-				},
-				func(path tspath.Path, _ *ast.SourceFile, _ *ast.SourceFile) {
-					projectChanges.ChangedFiles = append(projectChanges.ChangedFiles, path)
-				},
-			)
+			// a program built from the one the previous snapshot holds already knows
+			// the files it replaced, and took none away, so there is nothing to diff
+			if changed, ok := newProgram.FilesChangedFrom(oldProgram); ok {
+				projectChanges.ChangedFiles = slices.Clone(changed)
+			} else {
+				var oldFiles, newFiles map[tspath.Path]*ast.SourceFile
+				if oldProgram != nil {
+					oldFiles = oldProgram.FilesByPath()
+				}
+				if newProgram != nil {
+					newFiles = newProgram.FilesByPath()
+				}
+				core.DiffMaps(
+					oldFiles, newFiles,
+					nil, // onAdded: new file in project, not a change.
+					func(path tspath.Path, _ *ast.SourceFile) {
+						projectChanges.DeletedFiles = append(projectChanges.DeletedFiles, path)
+					},
+					func(path tspath.Path, _ *ast.SourceFile, _ *ast.SourceFile) {
+						projectChanges.ChangedFiles = append(projectChanges.ChangedFiles, path)
+					},
+				)
+			}
 			if len(projectChanges.ChangedFiles) > 0 || len(projectChanges.DeletedFiles) > 0 {
 				if changes.ChangedProjects == nil {
 					changes.ChangedProjects = make(map[ProjectID]*ProjectFileChanges)

@@ -77,9 +77,22 @@ type packageNamesInfo struct {
 	deepImportPackages *collections.Set[string]
 }
 
+// programID names a program without keeping it alive, so that a program built from
+// another can say which one without retaining every program before it.
+type programID uint64
+
+var nextProgramID atomic.Uint64
+
 type Program struct {
 	opts        ProgramOptions
 	checkerPool CheckerPool // always set; used as fallback for project system pools
+
+	// id names this program. derivedFrom names the program this one was built from by
+	// replacing the files at changedPaths and adding files that program did not hold,
+	// and is zero for a program built from scratch. See FilesChangedFrom.
+	id           programID
+	derivedFrom  programID
+	changedPaths []tspath.Path
 
 	// compilerCheckerPool is set only when the built-in compiler checker pool is in use
 	// (i.e. CreateCheckerPool was not provided). It enables grouped parallel iteration,
@@ -272,7 +285,7 @@ func (p *Program) GetSourceFileFromReference(origin *ast.SourceFile, ref *ast.Fi
 }
 
 func NewProgram(opts ProgramOptions) *Program {
-	p := &Program{opts: opts}
+	p := &Program{opts: opts, id: newProgramID()}
 	if p.opts.Tracing != nil {
 		defer p.opts.Tracing.Push(tracing.PhaseProgram, "createProgram", map[string]any{"configFilePath": opts.Config.CompilerOptions().ConfigFilePath}, true)()
 	}
@@ -318,11 +331,18 @@ func (p *Program) UpdateProgram(changedFilePath tspath.Path, newHost CompilerHos
 	// TODO: reverify compiler options when config has changed?
 	result := &Program{
 		opts:                        newOpts,
+		id:                          newProgramID(),
+		derivedFrom:                 p.id,
 		comparePathsOptions:         p.comparePathsOptions,
 		processedFiles:              p.processedFiles,
 		usesUriStyleNodeCoreModules: p.usesUriStyleNodeCoreModules,
 		programDiagnostics:          p.programDiagnostics,
 		hasEmitBlockingDiagnostics:  p.hasEmitBlockingDiagnostics,
+	}
+	// the one file below is the whole difference between the two programs, and the
+	// host answers with the file it already holds when the text did not change
+	if oldFile != newFile {
+		result.changedPaths = []tspath.Path{newFile.Path()}
 	}
 	result.unresolvedImports.tryReuse(&p.unresolvedImports)
 	result.knownSymlinks.tryReuse(&p.knownSymlinks)
@@ -399,6 +419,8 @@ func (p *Program) AddRootFiles(
 
 	result := &Program{
 		opts:                        newOpts,
+		id:                          newProgramID(),
+		derivedFrom:                 p.id,
 		comparePathsOptions:         p.comparePathsOptions,
 		processedFiles:              processed,
 		usesUriStyleNodeCoreModules: p.usesUriStyleNodeCoreModules,
@@ -407,6 +429,12 @@ func (p *Program) AddRootFiles(
 	// added to keeps the files it had
 	for path, file := range replacements {
 		result.filesByPath[path] = file
+		// the host answers with the file it already holds when the text did not change,
+		// and the added roots only ever bring files in, so these are the whole
+		// difference between the two programs
+		if p.filesByPath[path] != file {
+			result.changedPaths = append(result.changedPaths, path)
+		}
 	}
 	if len(replacements) > 0 {
 		for i, file := range result.files {
@@ -419,6 +447,25 @@ func (p *Program) AddRootFiles(
 	result.reuseCommonSourceDirectory(p, processed.files[p.rootFilesEnd:processed.rootFilesEnd])
 	result.verifyCompilerOptions()
 	return result, acquired, true
+}
+
+// FilesChangedFrom reports every path at which this program holds a different source
+// file than base does, and whether it could say. It answers only for the program this
+// one was built from directly — by UpdateProgram or AddRootFiles — and a false return
+// leaves the caller to compare the two file sets itself.
+//
+// Neither of those ways of building a program takes a file away, so a true return also
+// says that base holds no file this program does not, and files this program holds that
+// base does not are new rather than changed.
+func (p *Program) FilesChangedFrom(base *Program) ([]tspath.Path, bool) {
+	if p == nil || base == nil || p.derivedFrom == 0 || p.derivedFrom != base.id {
+		return nil, false
+	}
+	return p.changedPaths, true
+}
+
+func newProgramID() programID {
+	return programID(nextProgramID.Add(1))
 }
 
 // canAddRootFiles reports whether newConfig differs from this program's config in

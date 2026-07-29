@@ -320,6 +320,7 @@ func TestAddRootFilesProbe(t *testing.T) {
 			if !ok {
 				return
 			}
+			assertChangedPathsAreTheDiff(t, base, added)
 			rebuilt := newTestProgram(testCase.files, options, allRoots)
 			assertProgramsEquivalent(t, added, rebuilt)
 			assert.Equal(t, programFingerprint(base), before, "base program mutated after comparison")
@@ -411,6 +412,7 @@ func TestAddRootFilesChained(t *testing.T) {
 		roots = append(roots, added...)
 		next, _, ok := program.AddRootFiles(newTestConfig(options, roots), nil, newTestHost(files), nil)
 		assert.Assert(t, ok, "AddRootFiles %v", added)
+		assertChangedPathsAreTheDiff(t, program, next)
 		assertProgramsEquivalent(t, next, newTestProgram(files, options, roots))
 		program = next
 	}
@@ -449,5 +451,32 @@ func TestAddRootFilesReplacesSeveralChangedFiles(t *testing.T) {
 	assert.Equal(t, programFingerprint(base), before, "base program mutated")
 	assert.Equal(t, added.GetSourceFileByPath("/p/a.ts").Text(), edited["/p/a.ts"])
 	assert.Equal(t, added.GetSourceFileByPath("/p/b.ts").Text(), edited["/p/b.ts"])
+	assertChangedPathsAreTheDiff(t, base, added)
 	assertProgramsEquivalent(t, added, newTestProgram(edited, options, []string{"/p/a.ts", "/p/b.ts", "/p/c.ts"}))
+}
+
+// assertChangedPathsAreTheDiff checks what a program built from another says it
+// changed against comparing the two file maps outright, which is what the API session
+// reports to the client when a program cannot say. The two have to name the same
+// files, and the derived program must hold every file the base did, since the client
+// is told nothing was taken away.
+func assertChangedPathsAreTheDiff(t *testing.T, base *Program, derived *Program) {
+	t.Helper()
+	reported, ok := derived.FilesChangedFrom(base)
+	assert.Assert(t, ok, "the derived program could not say what it changed")
+	var diff []string
+	for path, file := range base.filesByPath {
+		now, held := derived.filesByPath[path]
+		assert.Assert(t, held, "the derived program dropped %s", path)
+		if now != file {
+			diff = append(diff, string(path))
+		}
+	}
+	said := make([]string, 0, len(reported))
+	for _, path := range reported {
+		said = append(said, string(path))
+	}
+	slices.Sort(diff)
+	slices.Sort(said)
+	assert.Equal(t, strings.Join(said, ", "), strings.Join(diff, ", "), "changed paths")
 }
