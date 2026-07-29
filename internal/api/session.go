@@ -30,6 +30,7 @@ import (
 	"github.com/microsoft/typescript-go/internal/project"
 	"github.com/microsoft/typescript-go/internal/tsoptions"
 	"github.com/microsoft/typescript-go/internal/tspath"
+	"github.com/zeebo/xxh3"
 )
 
 var sessionIDCounter atomic.Uint64
@@ -590,6 +591,8 @@ func (s *Session) HandleRequest(ctx context.Context, method string, params json.
 		return s.handleUpdateTemporarySnapshot(ctx, parsed.(*UpdateTemporarySnapshotParams))
 	case string(MethodParseConfigFile):
 		return s.handleParseConfigFile(ctx, parsed.(*ParseConfigFileParams))
+	case string(MethodParseSourceFile):
+		return s.handleParseSourceFile(ctx, parsed.(*ParseSourceFileParams))
 	case string(MethodGetDefaultProjectForFile):
 		return s.handleGetDefaultProjectForFile(ctx, parsed.(*GetDefaultProjectForFileParams))
 	case string(MethodGetSourceFile):
@@ -1190,6 +1193,74 @@ func (s *Session) handleParseConfigFile(ctx context.Context, params *ParseConfig
 		nil, /*extendedConfigCache*/
 	)
 	return NewConfigFileResponse(parsedCommandLine), nil
+}
+
+// handleParseSourceFile parses text as a source file and returns its encoded AST,
+// without opening a snapshot, building a program or binding anything.
+//
+// This is what a purely syntactic edit costs: a client that has just rewritten a file's
+// text and wants the tree back needs a parse of that one file and nothing else. The
+// nodes it returns carry the same handles the program's own parse would — an encoded
+// node's index is a pure function of the AST shape, which parse options do not affect
+// (see TestParseSourceFileNodeIdentityMatchesTheProgram) — so a handle minted from this
+// tree resolves against whatever program later holds the same text.
+//
+// The text is a parameter rather than read from the file system because the file system
+// is the client's, so reading it here would be a round trip back to the caller that
+// already has the string.
+func (s *Session) handleParseSourceFile(ctx context.Context, params *ParseSourceFileParams) (any, error) {
+	fileName := params.File.ToAbsoluteFileName(s.projectSession.GetCurrentDirectory())
+	path := s.toPath(fileName)
+	sourceFile := parser.ParseSourceFile(
+		ast.SourceFileParseOptions{
+			FileName:                       fileName,
+			Path:                           path,
+			ExternalModuleIndicatorOptions: s.externalModuleIndicatorOptionsFor(params, fileName, path),
+		},
+		params.Text,
+		scriptKindFor(fileName),
+	)
+	// the parser leaves the hash zero — only the parse cache fills it in — and it is what
+	// the client's own source file cache keys on, so it is filled in with the same hash a
+	// file handle would carry
+	sourceFile.Hash = xxh3.HashString128(params.Text)
+	return s.encodeSourceFileResponse(sourceFile)
+}
+
+// scriptKindFor is the script kind a program would parse the file as, which is what its
+// extension says — with the same fallback compilerHost.GetSourceFile makes, since that is
+// the parse this stands in for: a file whose extension says nothing is TypeScript, the way
+// TypeScript's own ensureScriptKind has always defaulted it, rather than being refused by
+// the parser.
+func scriptKindFor(fileName string) core.ScriptKind {
+	if scriptKind := core.GetScriptKindFromFileName(fileName); scriptKind != core.ScriptKindUnknown {
+		return scriptKind
+	}
+	return core.ScriptKindTS
+}
+
+// externalModuleIndicatorOptionsFor is the parse options a program would give the file,
+// taken from the snapshot the client named — read, never opened. A file the program
+// already holds answers with the options it was parsed with; anything else is worked out
+// from the program's compiler options and the file's metadata, which is what the program
+// would do when the file arrived. With no snapshot named, or one that has gone, the
+// defaults stand.
+func (s *Session) externalModuleIndicatorOptionsFor(params *ParseSourceFileParams, fileName string, path tspath.Path) ast.ExternalModuleIndicatorOptions {
+	if params.Snapshot == 0 {
+		return ast.ExternalModuleIndicatorOptions{}
+	}
+	sd, err := s.getSnapshotData(params.Snapshot)
+	if err != nil {
+		return ast.ExternalModuleIndicatorOptions{}
+	}
+	program, err := sd.getProgram(params.Project)
+	if err != nil {
+		return ast.ExternalModuleIndicatorOptions{}
+	}
+	if existing := program.GetSourceFileByPath(path); existing != nil {
+		return existing.ParseOptions().ExternalModuleIndicatorOptions
+	}
+	return ast.GetExternalModuleIndicatorOptions(fileName, program.Options(), program.GetSourceFileMetaData(path))
 }
 
 // handleGetSourceFile returns a source file from a project within a snapshot.

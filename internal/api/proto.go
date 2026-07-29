@@ -73,6 +73,7 @@ const (
 	MethodUpdateSnapshot           Method = "updateSnapshot"
 	MethodUpdateTemporarySnapshot  Method = "updateTemporarySnapshot"
 	MethodParseConfigFile          Method = "parseConfigFile"
+	MethodParseSourceFile          Method = "parseSourceFile"
 	MethodGetDefaultProjectForFile Method = "getDefaultProjectForFile"
 	MethodGetSymbolAtPosition      Method = "getSymbolAtPosition"
 	MethodGetSymbolsAtPositions    Method = "getSymbolsAtPositions"
@@ -427,6 +428,7 @@ var unmarshalers = map[Method]func([]byte) (any, error){
 	MethodUpdateSnapshot:           unmarshallerFor[UpdateSnapshotParams],
 	MethodUpdateTemporarySnapshot:  unmarshallerFor[UpdateTemporarySnapshotParams],
 	MethodParseConfigFile:          unmarshallerFor[ParseConfigFileParams],
+	MethodParseSourceFile:          unmarshallerFor[ParseSourceFileParams],
 	MethodGetDefaultProjectForFile: unmarshallerFor[GetDefaultProjectForFileParams],
 	MethodGetSourceFile:            unmarshallerFor[GetSourceFileParams],
 	MethodGetSourceFileNames:       unmarshallerFor[GetSourceFileNamesParams],
@@ -573,6 +575,18 @@ var unmarshalers = map[Method]func([]byte) (any, error){
 
 type ParseConfigFileParams struct {
 	File DocumentIdentifier `json:"file"`
+}
+
+// ParseSourceFileParams are the parameters for the parseSourceFile method, which parses
+// text into an encoded AST without opening a snapshot — see Session.handleParseSourceFile.
+type ParseSourceFileParams struct {
+	File DocumentIdentifier `json:"file"`
+	Text string             `json:"text"`
+	// Snapshot and Project name where the parse options come from. They are read, never
+	// created: with neither, or with a pair that no longer resolves, the file is parsed
+	// with default external module indicator options.
+	Snapshot SnapshotID `json:"snapshot,omitempty"`
+	Project  ProjectID  `json:"project,omitempty"`
 }
 
 // ReleaseParams are the parameters for the release method.

@@ -156,6 +156,8 @@ export class API<FromLSP extends boolean = false> {
     private activeSnapshots: Set<Snapshot> = new Set();
     private latestSnapshot: Snapshot | undefined;
     private compilerVersion: string | undefined;
+    /** Decodes what {@link parseSourceFile} returns; the cached trees have their own. */
+    private parseDecoder = new Wtf8Decoder();
     readonly internal: InternalAPI;
 
     /** The compiler's own version, e.g. `7.1.0-dev`. Undefined until initialized. */
@@ -193,6 +195,45 @@ export class API<FromLSP extends boolean = false> {
     async parseConfigFile(file: DocumentIdentifier): Promise<ParsedCommandLine> {
         await this.ensureInitialized();
         return this.client.apiRequest<ParsedCommandLine>("parseConfigFile", { file });
+    }
+
+    /**
+     * Parses text as a source file, without opening a snapshot or building a program.
+     *
+     * This is what a purely syntactic edit costs: a caller that has just rewritten a
+     * file's text and wants the tree back needs a parse of that one file and nothing
+     * else, where `updateSnapshot` clones a program and rebuilds whatever depends on it.
+     *
+     * The nodes carry the same handles the program's own parse of the same text would,
+     * so a handle taken from this tree resolves against whatever program later holds
+     * that text. It resolves against nothing until one does: the caller is responsible
+     * for the text reaching the compiler — by writing it where the compiler reads and
+     * naming it in the next `updateSnapshot` — before it asks anything semantic about a
+     * node.
+     *
+     * @param file - The file the text belongs to. Its extension decides the script kind,
+     * exactly as it does for a file the compiler reads itself.
+     * @param text - The text to parse.
+     * @param context - The snapshot and project to take parse options from. They are
+     * read, never opened; with neither, or with a pair that has been released, the
+     * defaults stand — which can only misreport the file's module-ness, never move a node.
+     */
+    async parseSourceFile(file: DocumentIdentifier, text: string, context?: { snapshot: number; project: Path; }): Promise<SourceFile> {
+        await this.ensureInitialized();
+        const binaryData = await this.client.apiRequestBinary("parseSourceFile", {
+            file,
+            text,
+            ...context != null ? { snapshot: context.snapshot, project: context.project } : {},
+        });
+        if (!binaryData) {
+            throw new Error(`Failed to parse source file: ${resolveFileName(file)}`);
+        }
+        const sourceFile = new RemoteSourceFile(binaryData, this.parseDecoder, this.client.getTimingCollector()) as unknown as SourceFile;
+        // offered to the cache so that whichever program next holds this text answers
+        // with this object rather than one of its own — see SourceFileCache#offer
+        const view = new DataView(binaryData.buffer, binaryData.byteOffset, binaryData.byteLength);
+        this.sourceFileCache.offer(this.toPath!(resolveFileName(file)), sourceFile, readParseOptionsKey(view), readSourceFileHash(view));
+        return sourceFile;
     }
 
     async updateSnapshot(params?: FromLSP extends true ? LSPUpdateSnapshotParams : UpdateSnapshotParams): Promise<Snapshot> {
