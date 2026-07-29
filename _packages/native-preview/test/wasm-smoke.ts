@@ -5,13 +5,11 @@ import { SyntaxKind } from "@typescript/native-preview/unstable/ast";
 import { createVirtualFileSystem } from "@typescript/native-preview/unstable/fs";
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
-import { gunzipSync } from "node:zlib";
 import { createWasmAPI } from "../src/api/wasm/api.ts";
 
 // The package no longer reads the module itself: where it comes from is the
-// host's decision, so a Node host reads the bytes and hands them over. The
-// module ships gzipped, so they are unwrapped first.
-const wasm = gunzipSync(readFileSync(new URL("../dist/typescript.wasm.gz", import.meta.url)));
+// host's decision, so a Node host reads the bytes and hands them over.
+const wasm = readFileSync(new URL("../dist/typescript.wasm", import.meta.url));
 
 const files = {
     "/tsconfig.json": JSON.stringify({ compilerOptions: { strict: true } }),
