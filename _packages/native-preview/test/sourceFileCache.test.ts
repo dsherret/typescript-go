@@ -305,4 +305,64 @@ describe("SourceFileCache", () => {
             h.checkNothingLeaks();
         }
     });
+
+    /**
+     * An offer is a tree the client parsed itself, put where a later fetch can find it.
+     * The server's own hash and parse options key decide whether it is used, so the only
+     * things to check here are that a matching fetch gets that object back, that a
+     * mismatching one does not, and that offering repeatedly does not accumulate.
+     */
+    describe("offer", () => {
+        test("a fetch that matches gets the offered object back", () => {
+            const h = new Harness();
+            const offered = fileFor("/a.ts", "v1");
+            h.cache.offer("/a.ts" as Path, offered, "opts", "v1");
+            assert.strictEqual(h.cache.set("/a.ts" as Path, fileFor("/a.ts", "v1"), "opts", "v1", 1, "p"), offered);
+            h.snapshots.add(1);
+            h.projects.add("p");
+            h.paths.add("/a.ts");
+            h.model.set("/a.ts", 1, "p", "v1");
+            h.check("after a matching fetch");
+        });
+
+        test("a fetch of different text ignores the offer", () => {
+            const h = new Harness();
+            const offered = fileFor("/a.ts", "v1");
+            h.cache.offer("/a.ts" as Path, offered, "opts", "v1");
+            const fetched = fileFor("/a.ts", "v2");
+            assert.strictEqual(h.cache.set("/a.ts" as Path, fetched, "opts", "v2", 1, "p"), fetched);
+        });
+
+        test("a fetch with different parse options ignores the offer", () => {
+            const h = new Harness();
+            h.cache.offer("/a.ts" as Path, fileFor("/a.ts", "v1"), "opts", "v1");
+            const fetched = fileFor("/a.ts", "v1");
+            assert.strictEqual(h.cache.set("/a.ts" as Path, fetched, "other", "v1", 1, "p"), fetched);
+        });
+
+        test("only one un-retained offer is kept per path", () => {
+            const h = new Harness();
+            const internals = h.cache as unknown as { cache: Map<string, unknown[]>; };
+            for (let i = 0; i < 50; i++) h.cache.offer("/a.ts" as Path, fileFor("/a.ts", `v${i}`), "opts", `v${i}`);
+            assert.strictEqual(internals.cache.get("/a.ts")!.length, 1, "an editing loop must not accumulate a version per edit");
+        });
+
+        test("an offer does not displace an entry a snapshot is reading", () => {
+            const h = new Harness();
+            h.set("/a.ts", 1, "p", "v1");
+            h.cache.offer("/a.ts" as Path, fileFor("/a.ts", "v2"), "opts", "v2");
+            h.check("after offering beside a retained entry");
+            h.cache.offer("/a.ts" as Path, fileFor("/a.ts", "v3"), "opts", "v3");
+            h.check("after replacing the offer");
+            h.releaseSnapshot(1);
+            h.check("after releasing the snapshot");
+        });
+
+        test("offering what is already retained changes nothing", () => {
+            const h = new Harness();
+            h.set("/a.ts", 1, "p", "v1");
+            h.cache.offer("/a.ts" as Path, fileFor("/a.ts", "v1"), "opts", "v1");
+            h.check("after offering a duplicate");
+        });
+    });
 });
