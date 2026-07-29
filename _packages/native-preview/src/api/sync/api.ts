@@ -1279,6 +1279,23 @@ export class Checker {
         return data ? this.objectRegistry.getOrCreateSymbol(data) : undefined;
     }
 
+    /**
+     * Gets the symbol a declaration node declares, or `undefined` if the node is
+     * not a declaration.
+     *
+     * `getSymbolAtLocation` answers for the *name* of a declaration, so an
+     * anonymous one — an arrow function, an object literal, a call signature —
+     * has nothing to ask it with. This asks the declaration itself.
+     */
+    getSymbolOfDeclaration(node: Node): Symbol | undefined {
+        const data = this.client.apiRequest<SymbolResponse | null>("getSymbolOfDeclaration", {
+            snapshot: this.snapshotId,
+            project: this.project.id,
+            declaration: getNodeId(node),
+        });
+        return data ? this.objectRegistry.getOrCreateSymbol(data) : undefined;
+    }
+
     getSymbolAtPosition(file: DocumentIdentifier, position: number): Symbol | undefined;
     getSymbolAtPosition(file: DocumentIdentifier, positions: readonly number[]): (Symbol | undefined)[];
     getSymbolAtPosition(file: DocumentIdentifier, positionOrPositions: number | readonly number[]): Symbol | (Symbol | undefined)[] | undefined {
@@ -1664,6 +1681,20 @@ export class Checker {
             type: type.id,
             location: enclosingDeclaration ? getNodeId(enclosingDeclaration) : undefined,
             flags,
+        });
+    }
+
+    /**
+     * Renders a symbol the way the checker names it at `enclosingDeclaration`. A
+     * module symbol reads as the specifier that declaration's file would import
+     * it by.
+     */
+    symbolToString(symbol: Symbol, enclosingDeclaration?: Node): string {
+        return this.client.apiRequest<string>("symbolToString", {
+            snapshot: this.snapshotId,
+            project: this.project.id,
+            symbol: symbol.id,
+            location: enclosingDeclaration ? getNodeId(enclosingDeclaration) : undefined,
         });
     }
 

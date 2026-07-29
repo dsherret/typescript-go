@@ -78,6 +78,7 @@ const (
 	MethodGetSymbolsAtPositions    Method = "getSymbolsAtPositions"
 	MethodGetSymbolAtLocation      Method = "getSymbolAtLocation"
 	MethodGetSymbolsAtLocations    Method = "getSymbolsAtLocations"
+	MethodGetSymbolOfDeclaration   Method = "getSymbolOfDeclaration"
 	MethodGetTypeOfSymbol          Method = "getTypeOfSymbol"
 	MethodGetTypesOfSymbols        Method = "getTypesOfSymbols"
 	MethodGetDeclaredTypeOfSymbol  Method = "getDeclaredTypeOfSymbol"
@@ -140,6 +141,7 @@ const (
 	MethodTypeToTypeNode                     Method = "typeToTypeNode"
 	MethodSignatureToSignatureDeclaration    Method = "signatureToSignatureDeclaration"
 	MethodTypeToString                       Method = "typeToString"
+	MethodSymbolToString                     Method = "symbolToString"
 	MethodIsContextSensitive                 Method = "isContextSensitive"
 	MethodGetReturnTypeOfSignature           Method = "getReturnTypeOfSignature"
 	MethodGetRestTypeOfSignature             Method = "getRestTypeOfSignature"
@@ -419,6 +421,7 @@ var unmarshalers = map[Method]func([]byte) (any, error){
 	MethodGetSymbolsAtPositions:    unmarshallerFor[GetSymbolsAtPositionsParams],
 	MethodGetSymbolAtLocation:      unmarshallerFor[GetSymbolAtLocationParams],
 	MethodGetSymbolsAtLocations:    unmarshallerFor[GetSymbolsAtLocationsParams],
+	MethodGetSymbolOfDeclaration:   unmarshallerFor[GetSymbolOfDeclarationParams],
 	MethodGetTypeOfSymbol:          unmarshallerFor[GetTypeOfSymbolParams],
 	MethodGetTypesOfSymbols:        unmarshallerFor[GetTypesOfSymbolsParams],
 	MethodGetDeclaredTypeOfSymbol:  unmarshallerFor[GetTypeOfSymbolParams],
@@ -474,6 +477,7 @@ var unmarshalers = map[Method]func([]byte) (any, error){
 	MethodTypeToTypeNode:                     unmarshallerFor[TypeToTypeNodeParams],
 	MethodSignatureToSignatureDeclaration:    unmarshallerFor[SignatureToSignatureDeclarationParams],
 	MethodTypeToString:                       unmarshallerFor[TypeToTypeNodeParams],
+	MethodSymbolToString:                     unmarshallerFor[SymbolToStringParams],
 	MethodIsContextSensitive:                 unmarshallerFor[GetContextualTypeParams],
 	MethodGetReturnTypeOfSignature:           unmarshallerFor[GetSignaturePropertyParams],
 	MethodGetRestTypeOfSignature:             unmarshallerFor[CheckerSignatureParams],
@@ -650,6 +654,12 @@ type GetSymbolsAtLocationsParams struct {
 	Snapshot  SnapshotID   `json:"snapshot"`
 	Project   ProjectID    `json:"project"`
 	Locations []NodeHandle `json:"locations"`
+}
+
+type GetSymbolOfDeclarationParams struct {
+	Snapshot    SnapshotID `json:"snapshot"`
+	Project     ProjectID  `json:"project"`
+	Declaration NodeHandle `json:"declaration"`
 }
 
 type SymbolResponse struct {
@@ -1297,6 +1307,14 @@ type TypeToTypeNodeParams struct {
 	Type     TypeID     `json:"type"`
 	Location NodeHandle `json:"location,omitempty"`
 	Flags    int32      `json:"flags,omitempty"`
+}
+
+// SymbolToStringParams are the parameters for the symbolToString method.
+type SymbolToStringParams struct {
+	Snapshot SnapshotID `json:"snapshot"`
+	Project  ProjectID  `json:"project"`
+	Symbol   SymbolID   `json:"symbol"`
+	Location NodeHandle `json:"location,omitempty"`
 }
 
 // SignatureToSignatureDeclarationParams are the parameters for the signatureToSignatureDeclaration method.

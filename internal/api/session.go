@@ -610,6 +610,8 @@ func (s *Session) HandleRequest(ctx context.Context, method string, params json.
 		return s.handleGetSymbolAtLocation(ctx, parsed.(*GetSymbolAtLocationParams))
 	case string(MethodGetSymbolsAtLocations):
 		return s.handleGetSymbolsAtLocations(ctx, parsed.(*GetSymbolsAtLocationsParams))
+	case string(MethodGetSymbolOfDeclaration):
+		return s.handleGetSymbolOfDeclaration(ctx, parsed.(*GetSymbolOfDeclarationParams))
 	case string(MethodGetTypeOfSymbol):
 		return s.handleGetTypeOfSymbol(ctx, parsed.(*GetTypeOfSymbolParams))
 	case string(MethodGetTypesOfSymbols):
@@ -712,6 +714,8 @@ func (s *Session) HandleRequest(ctx context.Context, method string, params json.
 		return s.handleSignatureToSignatureDeclaration(ctx, parsed.(*SignatureToSignatureDeclarationParams))
 	case string(MethodTypeToString):
 		return s.handleTypeToString(ctx, parsed.(*TypeToTypeNodeParams))
+	case string(MethodSymbolToString):
+		return s.handleSymbolToString(ctx, parsed.(*SymbolToStringParams))
 	case string(MethodPrintNode):
 		return s.handlePrintNode(ctx, parsed.(*PrintNodeParams))
 	case string(MethodEmit):
@@ -1425,6 +1429,30 @@ func (s *Session) handleGetSymbolsAtLocations(ctx context.Context, params *GetSy
 	}
 
 	return results, nil
+}
+
+// handleGetSymbolOfDeclaration returns the symbol a declaration node declares.
+func (s *Session) handleGetSymbolOfDeclaration(ctx context.Context, params *GetSymbolOfDeclarationParams) (*SymbolResponse, error) {
+	setup, err := s.setupChecker(ctx, params.Snapshot, params.Project)
+	if err != nil {
+		return nil, err
+	}
+	defer setup.done()
+
+	node, err := setup.sd.resolveNodeHandle(setup.program, params.Declaration)
+	if err != nil {
+		return nil, err
+	}
+	if node == nil {
+		return nil, nil
+	}
+
+	symbol := setup.checker.GetSymbolOfDeclaration(node)
+	if symbol == nil {
+		return nil, nil
+	}
+
+	return setup.newSymbolResponse(symbol), nil
 }
 
 // handleGetTypeOfSymbol returns the type of a symbol.
@@ -2393,6 +2421,33 @@ func (s *Session) handleTypeToString(ctx context.Context, params *TypeToTypeNode
 		return setup.checker.TypeToStringEx(t, enclosingDeclaration, checker.TypeFormatFlags(params.Flags), nil), nil
 	}
 	return setup.checker.TypeToStringEx(t, enclosingDeclaration, checker.TypeFormatFlagsAllowUniqueESSymbolType|checker.TypeFormatFlagsUseAliasDefinedOutsideCurrentScope, nil), nil
+}
+
+// handleSymbolToString converts a symbol to the string representation the checker
+// gives it at a location. A module symbol reads as the specifier the location's
+// file would import it by, which is what names the container of a declaration a
+// file holds directly.
+func (s *Session) handleSymbolToString(ctx context.Context, params *SymbolToStringParams) (any, error) {
+	setup, err := s.setupChecker(ctx, params.Snapshot, params.Project)
+	if err != nil {
+		return nil, err
+	}
+	defer setup.done()
+
+	symbol, err := setup.resolveSymbolHandle(params.Symbol)
+	if err != nil {
+		return nil, err
+	}
+
+	var enclosingDeclaration *ast.Node
+	if params.Location != "" {
+		enclosingDeclaration, err = setup.sd.resolveNodeHandle(setup.program, params.Location)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return setup.checker.SymbolToStringEx(symbol, enclosingDeclaration, ast.SymbolFlagsAll, checker.SymbolFormatFlagsAllowAnyNodeKind), nil
 }
 
 // handlePrintNode decodes a binary-encoded AST node and prints it to text.

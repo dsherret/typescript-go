@@ -262,6 +262,17 @@ func (c *Checker) GetResolvedSymbol(node *ast.Node) *ast.Symbol {
 	return c.getResolvedSymbol(node)
 }
 
+// GetSymbolOfDeclaration returns the symbol a declaration node declares, or nil
+// if the node is not a declaration.
+//
+// GetSymbolAtLocation answers for the *name* of a declaration, so an anonymous
+// one — an arrow function, an object literal, a call signature — has nothing to
+// ask it with. This asks the declaration itself, which is how the binder's
+// internal symbol (`__object`, `__call`, `__type`) is reached.
+func (c *Checker) GetSymbolOfDeclaration(node *ast.Node) *ast.Symbol {
+	return c.getSymbolOfDeclaration(ast.GetReparsedNodeForNode(node))
+}
+
 func (c *Checker) GetJsxNamespace(location *ast.Node) string {
 	return c.getJsxNamespace(location)
 }
