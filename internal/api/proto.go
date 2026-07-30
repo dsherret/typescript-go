@@ -176,6 +176,7 @@ const (
 	MethodGetAliasedSymbol                   Method = "getAliasedSymbol"
 	MethodGetImmediateAliasedSymbol          Method = "getImmediateAliasedSymbol"
 	MethodGetExportsOfModule                 Method = "getExportsOfModule"
+	MethodGetExportedSymbolsOfFiles          Method = "getExportedSymbolsOfFiles"
 	MethodGetMemberInModuleExports           Method = "getMemberInModuleExports"
 	MethodGetJSDocTags                       Method = "getJsDocTags"
 	MethodGetDocumentationComment            Method = "getDocumentationComment"
@@ -527,6 +528,7 @@ var unmarshalers = map[Method]func([]byte) (any, error){
 	MethodGetAliasedSymbol:                   unmarshallerFor[CheckerSymbolParams],
 	MethodGetImmediateAliasedSymbol:          unmarshallerFor[CheckerSymbolParams],
 	MethodGetExportsOfModule:                 unmarshallerFor[CheckerSymbolParams],
+	MethodGetExportedSymbolsOfFiles:          unmarshallerFor[GetExportedSymbolsOfFilesParams],
 	MethodGetMemberInModuleExports:           unmarshallerFor[GetMemberInModuleExportsParams],
 	MethodGetJSDocTags:                       unmarshallerFor[CheckerSymbolParams],
 	MethodGetDocumentationComment:            unmarshallerFor[CheckerSymbolParams],
@@ -720,6 +722,27 @@ type SymbolResponse struct {
 	ValueDeclaration NodeHandle   `json:"valueDeclaration,omitempty"`
 	Parent           SymbolID     `json:"parent,omitzero"`
 	ExportSymbol     SymbolID     `json:"exportSymbol,omitzero"`
+}
+
+// GetExportedSymbolsOfFilesParams asks what a batch of files export. The batch is
+// the point: the answer for one file is a handful of map lookups next to what a
+// request costs, so a caller sweeping a project asks once rather than once a file.
+type GetExportedSymbolsOfFilesParams struct {
+	Snapshot SnapshotID           `json:"snapshot"`
+	Project  ProjectID            `json:"project"`
+	Files    []DocumentIdentifier `json:"files"`
+}
+
+// ExportedSymbolResponse is one exported name together with the declarations of the
+// symbol it is exported on.
+//
+// The declarations are the symbol's own, not the ones a re-export chain leads to:
+// following an export specifier or an import to what it names is the caller's to do,
+// and it is the caller that knows what it wants from the far end.
+type ExportedSymbolResponse struct {
+	// The escaped (`__String`) name the symbol is exported on.
+	Name         string       `json:"name"`
+	Declarations []NodeHandle `json:"declarations,omitempty"`
 }
 
 func symbolHandles(symbols []*ast.Symbol) []SymbolID {

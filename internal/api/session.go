@@ -790,6 +790,8 @@ func (s *Session) HandleRequest(ctx context.Context, method string, params json.
 		return s.handleGetImmediateAliasedSymbol(ctx, parsed.(*CheckerSymbolParams))
 	case string(MethodGetExportsOfModule):
 		return s.handleGetExportsOfModule(ctx, parsed.(*CheckerSymbolParams))
+	case string(MethodGetExportedSymbolsOfFiles):
+		return s.handleGetExportedSymbolsOfFiles(ctx, parsed.(*GetExportedSymbolsOfFilesParams))
 	case string(MethodGetMemberInModuleExports):
 		return s.handleGetMemberInModuleExports(ctx, parsed.(*GetMemberInModuleExportsParams))
 	case string(MethodGetJSDocTags):
@@ -3283,6 +3285,56 @@ func (s *Session) handleGetExportsOfModule(ctx context.Context, params *CheckerS
 	results := make([]*SymbolResponse, len(exports))
 	for i, exp := range exports {
 		results[i] = setup.newSymbolResponse(exp)
+	}
+
+	return results, nil
+}
+
+// handleGetExportedSymbolsOfFiles answers, for each file named, what it exports and
+// where each exported name is declared.
+//
+// This is handleGetExportsOfModule with the two questions either side of it folded in
+// — which symbol the file is, and where each export's declarations are — because a
+// caller asking a whole project what it exports otherwise pays three requests a file
+// to learn something the checker already has in hand.
+//
+// A file the program does not hold, or one that is not a module, answers with nothing
+// rather than an error: a sweep over a project's files should not fail on one of them.
+func (s *Session) handleGetExportedSymbolsOfFiles(ctx context.Context, params *GetExportedSymbolsOfFilesParams) ([][]*ExportedSymbolResponse, error) {
+	setup, err := s.setupChecker(ctx, params.Snapshot, params.Project)
+	if err != nil {
+		return nil, err
+	}
+	defer setup.done()
+
+	results := make([][]*ExportedSymbolResponse, len(params.Files))
+	for i, file := range params.Files {
+		sourceFile := setup.program.GetSourceFile(file.ToFileName())
+		if sourceFile == nil {
+			continue
+		}
+		symbol := setup.checker.GetSymbolAtLocation(sourceFile.AsNode())
+		if symbol == nil {
+			continue
+		}
+		exports := setup.checker.GetExportsOfModule(symbol)
+		if len(exports) == 0 {
+			continue
+		}
+		slices.SortFunc(exports, setup.checker.CompareSymbols)
+
+		exported := make([]*ExportedSymbolResponse, len(exports))
+		for j, export := range exports {
+			resp := &ExportedSymbolResponse{Name: ast.EscapeSymbolName(export.Name)}
+			if len(export.Declarations) > 0 {
+				resp.Declarations = make([]NodeHandle, len(export.Declarations))
+				for k, decl := range export.Declarations {
+					resp.Declarations[k] = setup.sd.nodeHandleFrom(decl)
+				}
+			}
+			exported[j] = resp
+		}
+		results[i] = exported
 	}
 
 	return results, nil

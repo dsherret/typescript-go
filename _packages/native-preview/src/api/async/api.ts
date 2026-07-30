@@ -56,6 +56,7 @@ import type {
     CompletionInfoResponse,
     DocumentIdentifier,
     DocumentPosition,
+    ExportedSymbolResponse,
     FileSpan,
     FileTextEdits,
     FormattingOptions,
@@ -1976,6 +1977,37 @@ export class Checker {
         return data ? data.map(d => this.objectRegistry.getOrCreateSymbol(d)) : [];
     }
 
+    /**
+     * Returns what each of the named files exports, and where each exported name is
+     * declared.
+     *
+     * This is {@link getExportsOfModule} with the questions either side of it folded in
+     * — which symbol a file is, and where each export's declarations are — and with the
+     * files batched, so that sweeping a project costs one request rather than three per
+     * file. A file the program does not hold, or one that is not a module, answers with
+     * an empty list.
+     *
+     * The declarations reported are the exported symbol's own. An export specifier or an
+     * import comes back as itself, not as whatever it names: following those is the
+     * caller's, because only the caller knows what it wants from the far end.
+     */
+    async getExportedSymbolsOfFiles(files: readonly DocumentIdentifier[]): Promise<readonly (readonly ExportedSymbol[])[]> {
+        const data = await this.client.apiRequest<(ExportedSymbolResponse[] | null)[] | null>("getExportedSymbolsOfFiles", {
+            snapshot: this.snapshotId,
+            project: this.project.id,
+            files,
+        });
+        return files.map((_, i) => {
+            const exports = data?.[i];
+            if (!exports) return [];
+            return exports.map(e => ({
+                name: unescapeLeadingUnderscores(e.name),
+                escapedName: e.name,
+                declarations: (e.declarations ?? []).map(d => new NodeHandle(d, this.project)),
+            }));
+        });
+    }
+
     async getMemberInModuleExports(symbol: Symbol, name: string): Promise<Symbol | undefined> {
         const data = await this.client.apiRequest<SymbolResponse | null>("getMemberInModuleExports", {
             snapshot: this.snapshotId,
@@ -2137,6 +2169,19 @@ export class Emitter {
             fileName: options.fileName === undefined ? undefined : rootedFileName(options.fileName),
         });
     }
+}
+
+/** One name a module exports, and the declarations of the symbol it is exported on. */
+export interface ExportedSymbol {
+    /** The display name (escaped underscores removed). */
+    readonly name: string;
+    /** The escaped (`__String`) name, which is the key in the module's export table. */
+    readonly escapedName: __String;
+    /**
+     * The exported symbol's own declarations. An export specifier or an import is
+     * reported as itself, not as whatever it names.
+     */
+    readonly declarations: readonly NodeHandle[];
 }
 
 export class NodeHandle {

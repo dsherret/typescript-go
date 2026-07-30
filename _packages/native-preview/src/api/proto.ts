@@ -372,6 +372,17 @@ export interface SymbolResponse {
     exportSymbol?: number;
 }
 
+/**
+ * One exported name together with the declarations of the symbol it is exported on.
+ *
+ * The declarations are the symbol's own: an export specifier or an import is reported
+ * as itself, not as whatever it names.
+ */
+export interface ExportedSymbolResponse {
+    name: __String;
+    declarations?: string[];
+}
+
 export interface TypeResponse {
     id: number;
     flags: number;
