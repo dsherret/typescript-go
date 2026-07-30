@@ -78,11 +78,16 @@ func (fs *callbackFS) SetConnection(ctx context.Context, conn Conn) {
 // delegates reports whether the named callback should handle the given path.
 //
 // Bundled paths — the lib.d.ts files embedded in the executable under the
-// "bundled:///" scheme — are always served by the base filesystem instead. The
-// compiler asks for them by default, and the client has no such files, so
-// delegating them would leave the program with no default library at all. Every
-// other path goes to the client when the callback is enabled, which is what lets
-// a caller-supplied library folder be read through the callbacks as usual.
+// "bundled:///" scheme — are always served by the base filesystem instead, which
+// is where the compiler's own copies are. The client has no such files, and a
+// client that says so definitively rather than answering "don't know" would leave
+// the program with no default library at all; answering here rather than asking
+// also spares a host round trip per lib file read.
+//
+// Every other path goes to the client when the callback is enabled, which is what
+// lets a caller-supplied library folder be read through the callbacks as usual.
+// WriteFile is left delegating: nothing writes to a bundled path, and the base
+// filesystem panics on one, so handing it to the client is the safer answer.
 func (fs *callbackFS) delegates(name string, path string) bool {
 	return fs.isEnabled(name) && !bundled.IsBundled(path)
 }
