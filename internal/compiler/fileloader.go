@@ -558,8 +558,19 @@ func (p *fileLoader) getDefaultLibFilePriority(a *ast.SourceFile) int {
 }
 
 func (p *fileLoader) loadSourceFileMetaData(fileName string) ast.SourceFileMetaData {
-	packageJsonScope := p.resolver.GetPackageScopeForPath(tspath.GetDirectoryPath(fileName))
-	moduleResolutionKind := p.opts.Config.CompilerOptions().GetModuleResolutionKind()
+	return sourceFileMetaData(fileName, p.resolver, p.opts.Config.CompilerOptions())
+}
+
+// sourceFileMetaData is what a file's package scope says about it — the `type` of the
+// nearest package.json that applies to it, where that package.json is, and the module
+// format the two imply.
+//
+// It is a function rather than a method because it is asked twice: as a file is loaded,
+// and about a file that has not been loaded, where the answer decides what parse options
+// the file would get if it were. See Program.SourceFileMetaDataFor.
+func sourceFileMetaData(fileName string, resolver *module.Resolver, compilerOptions *core.CompilerOptions) ast.SourceFileMetaData {
+	packageJsonScope := resolver.GetPackageScopeForPath(tspath.GetDirectoryPath(fileName))
+	moduleResolutionKind := compilerOptions.GetModuleResolutionKind()
 
 	var packageJsonType, packageJsonDirectory string
 	if packageJsonScope.Exists() {

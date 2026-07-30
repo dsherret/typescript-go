@@ -1794,6 +1794,22 @@ func (p *Program) GetSourceFileMetaData(path tspath.Path) ast.SourceFileMetaData
 	return p.sourceFileMetaDatas[path]
 }
 
+// SourceFileMetaDataFor is the metadata the program would parse fileName with, worked out
+// rather than looked up.
+//
+// GetSourceFileMetaData reads the map the program filled in as it loaded, so a path the
+// program does not hold reads as the zero value — and the zero value is a real answer, "no
+// package scope, so CommonJS", not a missing one. A caller asking about a file that is
+// about to join the program would take it for the answer and be wrong under a `"type":
+// "module"` scope. This asks the program's own resolver, which is what the file loader does
+// when the file does arrive.
+func (p *Program) SourceFileMetaDataFor(fileName string) ast.SourceFileMetaData {
+	if metaData, ok := p.sourceFileMetaDatas[tspath.ToPath(fileName, p.comparePathsOptions.CurrentDirectory, p.comparePathsOptions.UseCaseSensitiveFileNames)]; ok {
+		return metaData
+	}
+	return sourceFileMetaData(fileName, p.resolver, p.Options())
+}
+
 func (p *Program) GetEmitModuleFormatOfFile(sourceFile ast.HasFileName) core.ModuleKind {
 	return ast.GetEmitModuleFormatOfFileWorker(sourceFile.FileName(), p.projectReferenceFileMapper.getCompilerOptionsForFile(sourceFile), p.GetSourceFileMetaData(sourceFile.Path()))
 }

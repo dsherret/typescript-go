@@ -1260,7 +1260,11 @@ func (s *Session) externalModuleIndicatorOptionsFor(params *ParseSourceFileParam
 	if existing := program.GetSourceFileByPath(path); existing != nil {
 		return existing.ParseOptions().ExternalModuleIndicatorOptions
 	}
-	return ast.GetExternalModuleIndicatorOptions(fileName, program.Options(), program.GetSourceFileMetaData(path))
+	// the metadata is worked out rather than looked up: a file the program does not hold has
+	// none recorded, and taking the zero value for it says "no package scope" — which reads
+	// a file created under a `"type": "module"` scope as a script and so parses it with
+	// options the program would not have given it. See Program.SourceFileMetaDataFor.
+	return ast.GetExternalModuleIndicatorOptions(fileName, program.Options(), program.SourceFileMetaDataFor(fileName))
 }
 
 // handleGetSourceFile returns a source file from a project within a snapshot.

@@ -229,6 +229,41 @@ func TestParseSourceFileTakesParseOptionsFromTheProgram(t *testing.T) {
 	assert.Assert(t, s.session.externalModuleIndicatorOptionsFor(params, newFileName, tspath.Path(newFileName)).Force)
 }
 
+// TestParseSourceFileWorksOutTheMetadataOfAFileTheProgramLacks is the same question with
+// nothing else able to answer it. Under the default `moduleDetection` every non-declaration
+// file is forced to be a module whatever its package scope says, so the previous test would
+// pass reading no metadata at all; under `auto` the package scope is the whole answer, and
+// the program has none recorded for a file it does not hold.
+//
+// Reading the recorded metadata here rather than working it out says "no package scope",
+// which is a wrong answer rather than a missing one: the created file is parsed as a script
+// under a `"type": "module"` scope, and the tree is filed where the program will not look
+// for it — so the text is parsed twice as well as described wrongly.
+func TestParseSourceFileWorksOutTheMetadataOfAFileTheProgramLacks(t *testing.T) {
+	t.Parallel()
+	if !bundled.Embedded {
+		t.Skip("bundled files are not embedded")
+	}
+
+	const fileName = "/p/a.js"
+	s := newParseSession(t, map[string]string{
+		fileName:          "const a = 1;\n",
+		"/p/package.json": `{"type":"module"}`,
+	}, map[string]any{
+		"allowJs": true, "module": "nodenext", "moduleResolution": "nodenext", "moduleDetection": "auto",
+	})
+	defer s.close()
+
+	// the file the program does hold is forced, and by its package scope alone
+	fromProgram := s.program().GetSourceFileByPath(tspath.Path(fileName))
+	assert.Assert(t, fromProgram != nil)
+	assert.Assert(t, fromProgram.ParseOptions().ExternalModuleIndicatorOptions.Force)
+
+	const newFileName = "/p/b.js"
+	params := &ParseSourceFileParams{Snapshot: s.snapshot, Project: s.projectID}
+	assert.Assert(t, s.session.externalModuleIndicatorOptionsFor(params, newFileName, tspath.Path(newFileName)).Force)
+}
+
 // binderInitializedNodeFlags are the ast.NodeFlags a node does not carry when it is
 // parsed: the binder writes them onto the program's tree, and
 // NodeFlagsThisNodeOrAnySubNodesHasError is aggregated the first time it is asked for.
