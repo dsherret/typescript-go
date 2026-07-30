@@ -365,4 +365,79 @@ describe("SourceFileCache", () => {
             h.check("after offering a duplicate");
         });
     });
+
+    /**
+     * retainMatching is set without a tree to fall back on, for a client that asked the
+     * server for the hash and the parse options key alone rather than for the file. So
+     * what it has to do is agree with set: the same answer whenever set had one, and
+     * `undefined` exactly when set would have kept the tree it was handed — which is the
+     * client's signal to go and fetch one.
+     */
+    describe("retainMatching", () => {
+        test("answers with what a fetch of the same file would have", () => {
+            const h = new Harness();
+            const offered = fileFor("/a.ts", "v1");
+            h.cache.offer("/a.ts" as Path, offered, "opts", "v1");
+            assert.strictEqual(h.cache.retainMatching("/a.ts" as Path, "opts", "v1", 1, "p"), offered);
+            h.snapshots.add(1);
+            h.projects.add("p");
+            h.paths.add("/a.ts");
+            h.model.set("/a.ts", 1, "p", "v1");
+            h.check("after retaining a matching offer");
+        });
+
+        test("does not answer for different text", () => {
+            const h = new Harness();
+            h.cache.offer("/a.ts" as Path, fileFor("/a.ts", "v1"), "opts", "v1");
+            assert.strictEqual(h.cache.retainMatching("/a.ts" as Path, "opts", "v2", 1, "p"), undefined);
+        });
+
+        test("does not answer for different parse options", () => {
+            const h = new Harness();
+            h.cache.offer("/a.ts" as Path, fileFor("/a.ts", "v1"), "opts", "v1");
+            assert.strictEqual(h.cache.retainMatching("/a.ts" as Path, "other", "v1", 1, "p"), undefined);
+        });
+
+        test("does not answer for a path the cache has nothing for", () => {
+            const h = new Harness();
+            assert.strictEqual(h.cache.retainMatching("/a.ts" as Path, "opts", "v1", 1, "p"), undefined);
+        });
+
+        test("takes over an entry another snapshot is reading, and the books stay straight", () => {
+            const h = new Harness();
+            h.set("/a.ts", 1, "p", "v1");
+            assert.strictEqual(
+                (h.cache.retainMatching("/a.ts" as Path, "opts", "v1", 2, "p") as unknown as { version: string; }).version,
+                "v1",
+            );
+            h.snapshots.add(2);
+            h.model.set("/a.ts", 2, "p", "v1");
+            h.check("after a second snapshot retained the same entry");
+            h.releaseSnapshot(1);
+            h.check("after the first snapshot let go");
+            h.checkNothingLeaks();
+        });
+
+        test("displaces what the pair was reading, exactly as set does", () => {
+            const h = new Harness();
+            h.set("/a.ts", 1, "p", "v1");
+            h.cache.offer("/a.ts" as Path, fileFor("/a.ts", "v2"), "opts", "v2");
+            assert.strictEqual(
+                (h.cache.retainMatching("/a.ts" as Path, "opts", "v2", 1, "p") as unknown as { version: string; }).version,
+                "v2",
+            );
+            h.model.set("/a.ts", 1, "p", "v2");
+            h.check("after the same pair moved to another version");
+            h.checkNothingLeaks();
+        });
+
+        test("retaining twice counts once", () => {
+            const h = new Harness();
+            h.set("/a.ts", 1, "p", "v1");
+            h.cache.retainMatching("/a.ts" as Path, "opts", "v1", 1, "p");
+            h.cache.retainMatching("/a.ts" as Path, "opts", "v1", 1, "p");
+            h.check("after retaining the same entry repeatedly");
+            h.checkNothingLeaks();
+        });
+    });
 });

@@ -81,6 +81,7 @@ import type {
     ProjectResponse,
     QuotePreference,
     SignatureResponse,
+    SourceFileIdentity,
     SourceFileMetadata,
     SymbolResponse,
     TextEdit,
@@ -1003,6 +1004,35 @@ export class Program {
         const retained = this.sourceFileCache.getRetained(path, this.snapshotId, this.project.id);
         if (retained) {
             return retained;
+        }
+
+        // The cache may already hold the tree this would fetch — usually the one
+        // `parseSourceFile` offered for text the client wrote itself. Settling that needs
+        // the server's content hash and parse options key and nothing else, which is a few
+        // dozen bytes against a whole AST, so ask for those first. On a match the entry is
+        // retained and the tree never crosses; on a miss the fetch below happens as it
+        // always did, one small request the worse for having asked.
+        //
+        // Asking whenever the cache holds *anything* for the path is deliberately coarse:
+        // an entry another snapshot left may well not match, and paying a small request to
+        // find that out is the trade. What it buys is not having to decide from here which
+        // entries could match, which is what the two values being asked for are for. A path
+        // the cache has nothing for cannot match anything and is not asked about.
+        if (this.sourceFileCache.has(path)) {
+            const identity = this.client.apiRequest<SourceFileIdentity | null>("getSourceFileIdentity", {
+                snapshot: this.snapshotId,
+                project: this.project.id,
+                file,
+            });
+            // the program does not hold the file, which is the same answer `getSourceFile`
+            // would have come back with
+            if (!identity) {
+                return undefined;
+            }
+            const known = this.sourceFileCache.retainMatching(path, identity.parseOptionsKey, identity.contentHash, this.snapshotId, this.project.id);
+            if (known) {
+                return known;
+            }
         }
 
         // Fetch from server

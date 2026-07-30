@@ -596,6 +596,8 @@ func (s *Session) HandleRequest(ctx context.Context, method string, params json.
 		return s.handleGetDefaultProjectForFile(ctx, parsed.(*GetDefaultProjectForFileParams))
 	case string(MethodGetSourceFile):
 		return s.handleGetSourceFile(ctx, parsed.(*GetSourceFileParams))
+	case string(MethodGetSourceFileIdentity):
+		return s.handleGetSourceFileIdentity(ctx, parsed.(*GetSourceFileParams))
 	case string(MethodGetSourceFileNames):
 		return s.handleGetSourceFileNames(ctx, parsed.(*GetSourceFileNamesParams))
 	case string(MethodGetSourceFileMetadata):
@@ -1273,6 +1275,38 @@ func (s *Session) handleGetSourceFile(ctx context.Context, params *GetSourceFile
 	}
 
 	return s.encodeSourceFileResponse(program.GetSourceFile(params.File.ToFileName()))
+}
+
+// handleGetSourceFileIdentity says which parse of a file the program is holding,
+// without sending the file.
+//
+// It answers with the two fields handleGetSourceFile's response leads with, read off the
+// very source file that response would have encoded. A client that already has a tree for
+// the path — because it parsed the text itself, or fetched it under another snapshot —
+// needs only these to know whether its copy is the program's, and the whole point is that
+// the answer is a few dozen bytes where the file is a few dozen kilobytes.
+//
+// A file the program does not hold answers nil, which is what handleGetSourceFile answers
+// with too.
+func (s *Session) handleGetSourceFileIdentity(ctx context.Context, params *GetSourceFileParams) (*SourceFileIdentity, error) {
+	sd, err := s.getSnapshotData(params.Snapshot)
+	if err != nil {
+		return nil, err
+	}
+
+	program, err := sd.getProgram(params.Project)
+	if err != nil {
+		return nil, err
+	}
+
+	sourceFile := program.GetSourceFile(params.File.ToFileName())
+	if sourceFile == nil {
+		return nil, nil
+	}
+	return &SourceFileIdentity{
+		ContentHash:     encoder.SourceFileHash(sourceFile),
+		ParseOptionsKey: encoder.ParseOptionsKey(sourceFile),
+	}, nil
 }
 
 // handleGetProjectRootFiles returns the project's root file list, which its

@@ -77,13 +77,29 @@ export class SourceFileCache {
             entry = { file, contentHash, parseOptionsKey, refCount: 0 };
             entries.push(entry);
         }
-        const scope = this.scopeFor(snapshotId, projectId);
-        const displaced = scope.get(path);
-        if (displaced !== entry) {
-            scope.set(path, entry);
-            entry.refCount++;
-            if (displaced !== undefined) this.releaseEntry(path, displaced);
-        }
+        this.retain(path, entry, snapshotId, projectId);
+        return entry.file;
+    }
+
+    /**
+     * Retains the entry this path already has for the server's hash and parse options key,
+     * if it has one, without a file to fall back on.
+     *
+     * This is {@link set} with the tree left out, and it decides on exactly what
+     * {@link set} decides on: the same two values, read off the same source file the
+     * program would have encoded, compared with the same predicate. So it hands back the
+     * object {@link set} would have handed back, and answers `undefined` in precisely the
+     * cases where {@link set} would have kept the tree it was given — which is when the
+     * caller has to go and fetch one.
+     *
+     * What it buys is that the tree does not have to be fetched to be compared with. Most
+     * often the entry it finds is the one {@link offer} left: a client that parsed the
+     * text itself and then asked the program something about it.
+     */
+    retainMatching(path: Path, parseOptionsKey: string, contentHash: string, snapshotId: number, projectId: string): SourceFile | undefined {
+        const entry = this.cache.get(path)?.find(e => e.parseOptionsKey === parseOptionsKey && e.contentHash === contentHash);
+        if (entry === undefined) return undefined;
+        this.retain(path, entry, snapshotId, projectId);
         return entry.file;
     }
 
@@ -100,9 +116,14 @@ export class SourceFileCache {
      * Offered rather than retained because nothing here knows the program took the file
      * at that text — the client wrote it, the compiler has not been asked yet, and its
      * parse options are the ones the *previous* snapshot would have given it. So the
-     * fetch still happens, and it is the server's own hash and parse options key that
+     * server is still asked, and it is the server's own hash and parse options key that
      * decide: {@link set} hands back this entry when they match what came over the wire,
      * and ignores it when they do not. A wrong offer costs nothing but the entry.
+     *
+     * What the server is asked for is the two values rather than the whole file — see
+     * {@link retainMatching}, which applies the same predicate to the same two values from
+     * the same source file. The judgement is unchanged; only the tree that used to be
+     * decoded alongside it and thrown away is gone.
      *
      * At most one un-retained offer is kept per path — a later one replaces it — so an
      * editing loop that never reads a file back through a program does not accumulate a
@@ -264,6 +285,16 @@ export class SourceFileCache {
                 entry.refCount++;
             }
         }
+    }
+
+    /** Makes an entry what the given (snapshot, project) pair answers this path with. */
+    private retain(path: Path, entry: CachedSourceFile, snapshotId: number, projectId: string): void {
+        const scope = this.scopeFor(snapshotId, projectId);
+        const displaced = scope.get(path);
+        if (displaced === entry) return;
+        scope.set(path, entry);
+        entry.refCount++;
+        if (displaced !== undefined) this.releaseEntry(path, displaced);
     }
 
     private releaseEntry(path: Path, entry: CachedSourceFile): void {

@@ -84,6 +84,7 @@ const (
 	MethodGetTypesOfSymbols        Method = "getTypesOfSymbols"
 	MethodGetDeclaredTypeOfSymbol  Method = "getDeclaredTypeOfSymbol"
 	MethodGetSourceFile            Method = "getSourceFile"
+	MethodGetSourceFileIdentity    Method = "getSourceFileIdentity"
 	MethodGetSourceFileNames       Method = "getSourceFileNames"
 	MethodGetSourceFileMetadata    Method = "getSourceFileMetadata"
 	MethodGetConfigFileNames       Method = "getConfigFileNames"
@@ -432,6 +433,7 @@ var unmarshalers = map[Method]func([]byte) (any, error){
 	MethodParseSourceFile:          unmarshallerFor[ParseSourceFileParams],
 	MethodGetDefaultProjectForFile: unmarshallerFor[GetDefaultProjectForFileParams],
 	MethodGetSourceFile:            unmarshallerFor[GetSourceFileParams],
+	MethodGetSourceFileIdentity:    unmarshallerFor[GetSourceFileParams],
 	MethodGetSourceFileNames:       unmarshallerFor[GetSourceFileNamesParams],
 	MethodGetSourceFileMetadata:    unmarshallerFor[GetSourceFileParams],
 	MethodGetConfigFileNames:       unmarshallerFor[GetProjectDiagnosticsParams],
@@ -955,6 +957,17 @@ type GetSourceFileParams struct {
 type GetSourceFileNamesParams struct {
 	Snapshot SnapshotID `json:"snapshot"`
 	Project  ProjectID  `json:"project"`
+}
+
+// SourceFileIdentity is which parse of a file a program is holding, without the file.
+//
+// The two fields are the header a source file response leads with — see
+// encoder.SourceFileHash and encoder.ParseOptionsKey — and they are what a client's
+// source file cache decides on. A client already holding a tree for the path asks for
+// this instead of the file, and reuses its own copy when they match.
+type SourceFileIdentity struct {
+	ContentHash     string `json:"contentHash"`
+	ParseOptionsKey string `json:"parseOptionsKey"`
 }
 
 // SourceFileMetadata carries program-stored metadata about a single source file.
