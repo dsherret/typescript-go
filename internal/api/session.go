@@ -30,7 +30,6 @@ import (
 	"github.com/microsoft/typescript-go/internal/project"
 	"github.com/microsoft/typescript-go/internal/tsoptions"
 	"github.com/microsoft/typescript-go/internal/tspath"
-	"github.com/zeebo/xxh3"
 )
 
 var sessionIDCounter atomic.Uint64
@@ -1205,38 +1204,30 @@ func (s *Session) handleParseConfigFile(ctx context.Context, params *ParseConfig
 // (see TestParseSourceFileNodeIdentityMatchesTheProgram) — so a handle minted from this
 // tree resolves against whatever program later holds the same text.
 //
+// It is the program's own tree, in fact, rather than merely one that matches it: the parse
+// goes through the cache a program build reads, so the build that follows the next
+// snapshot finds this tree instead of parsing the text again. See
+// project.Session.ParseSourceFile, which owns that and the reference it takes. One thing
+// follows from it: text a program is already holding comes back bound, so the node flags
+// the binder sets are present where they were not before. Which of the two a client saw was
+// always a question of whether anything had bound the file yet — see
+// binderInitializedNodeFlags — and now the answer is usually yes.
+//
 // The text is a parameter rather than read from the file system because the file system
 // is the client's, so reading it here would be a round trip back to the caller that
 // already has the string.
 func (s *Session) handleParseSourceFile(ctx context.Context, params *ParseSourceFileParams) (any, error) {
 	fileName := params.File.ToAbsoluteFileName(s.projectSession.GetCurrentDirectory())
 	path := s.toPath(fileName)
-	sourceFile := parser.ParseSourceFile(
+	sourceFile := s.projectSession.ParseSourceFile(
 		ast.SourceFileParseOptions{
 			FileName:                       fileName,
 			Path:                           path,
 			ExternalModuleIndicatorOptions: s.externalModuleIndicatorOptionsFor(params, fileName, path),
 		},
 		params.Text,
-		scriptKindFor(fileName),
 	)
-	// the parser leaves the hash zero — only the parse cache fills it in — and it is what
-	// the client's own source file cache keys on, so it is filled in with the same hash a
-	// file handle would carry
-	sourceFile.Hash = xxh3.HashString128(params.Text)
 	return s.encodeSourceFileResponse(sourceFile)
-}
-
-// scriptKindFor is the script kind a program would parse the file as, which is what its
-// extension says — with the same fallback compilerHost.GetSourceFile makes, since that is
-// the parse this stands in for: a file whose extension says nothing is TypeScript, the way
-// TypeScript's own ensureScriptKind has always defaulted it, rather than being refused by
-// the parser.
-func scriptKindFor(fileName string) core.ScriptKind {
-	if scriptKind := core.GetScriptKindFromFileName(fileName); scriptKind != core.ScriptKindUnknown {
-		return scriptKind
-	}
-	return core.ScriptKindTS
 }
 
 // externalModuleIndicatorOptionsFor is the parse options a program would give the file,

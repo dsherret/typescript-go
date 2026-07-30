@@ -111,6 +111,10 @@ type Session struct {
 	// When a program is no longer referenced, its source files are
 	// released from the parseCache.
 	programCounter *programCounter
+	// offeredFiles are the parseCache references ParseSourceFile is holding on the
+	// caller's behalf, one per path, until the next snapshot is built.
+	offeredFiles   map[tspath.Path]ParseCacheKey
+	offeredFilesMu sync.Mutex
 
 	// read-only after initialization
 	initialUserPreferences lsutil.UserPreferences
@@ -1248,6 +1252,10 @@ func (s *Session) updateSnapshotRef(ctx context.Context, overlays map[tspath.Pat
 func (s *Session) updateSnapshot(ctx context.Context, overlays map[tspath.Path]*Overlay, change SnapshotChange, callerRef bool) *Snapshot {
 	oldSnapshot, newSnapshot := s.swapSnapshot(ctx, overlays, change, callerRef)
 
+	// the programs this snapshot needed have been built, so the trees offered for them
+	// to find are no longer being held for anything — see releaseOfferedFiles
+	s.releaseOfferedFiles()
+
 	// Enqueue ATA updates if needed
 	if s.typingsInstaller != nil && !s.Config().IsATADisabled() {
 		s.triggerATAForUpdatedProjects(newSnapshot)
@@ -1477,6 +1485,7 @@ func (s *Session) Close() {
 	s.cancelIdleCacheClean()
 	// Cancel periodic performance telemetry
 	s.stopPerformanceTelemetry()
+	s.releaseOfferedFiles()
 	s.backgroundQueue.Close()
 }
 

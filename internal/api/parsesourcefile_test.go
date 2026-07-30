@@ -87,6 +87,12 @@ export default function g<T>(t: T): T { return t; }
 // what makes a parse-only tree interchangeable with the program's own, both for node
 // handles and for the client's source file cache.
 //
+// The comparison is against a tree parsed here, independently, and not only against
+// getSourceFile: the endpoint's parse goes through the program's own parse cache, so for
+// text the program already holds the two responses encode the *same object* and comparing
+// them could not fail. An independent parse is what gives the comparison teeth, and the
+// endpoint is checked against both.
+//
 // The one thing that legitimately differs is the node flags the *binder* sets, and the
 // error flag a node aggregates on demand: those are written onto the program's tree after
 // it is parsed, and a tree nothing has bound does not carry them — see
@@ -136,9 +142,106 @@ func TestParseSourceFileMatchesGetSourceFile(t *testing.T) {
 				Project:  s.projectID,
 			})
 			assert.NilError(t, err)
-			assertSameEncodingIgnoringBinderFlags(t, decodeSourceFileResponse(t, viaParse), decodeSourceFileResponse(t, viaProgram))
+
+			fromProgram := s.program().GetSourceFileByPath(tspath.Path(testCase.file))
+			standalone := parser.ParseSourceFile(fromProgram.ParseOptions(), testCase.text, fromProgram.ScriptKind)
+			standalone.Hash = xxh3.HashString128(testCase.text)
+			standaloneBytes, _, err := encoder.EncodeSourceFile(standalone)
+			assert.NilError(t, err)
+
+			assertSameEncodingIgnoringBinderFlags(t, standaloneBytes, decodeSourceFileResponse(t, viaProgram))
+			assertSameEncodingIgnoringBinderFlags(t, decodeSourceFileResponse(t, viaParse), standaloneBytes)
 		})
 	}
+}
+
+// TestParseSourceFileIsTheTreeTheProgramTakes is the property the endpoint's cost rests
+// on: the text is parsed once, not once here and again when a program is built over it.
+//
+// It is checked by object identity rather than by a counter, because identity is the
+// stronger statement — the program did not merely produce an equal tree, it took this one,
+// which is only possible if it found it in the cache instead of parsing. The cases are the
+// ones that decide whether the tree is found: every script kind, module detection the file
+// itself does not settle, text the file system does not have, and a path the program does
+// not hold at all.
+func TestParseSourceFileIsTheTreeTheProgramTakes(t *testing.T) {
+	t.Parallel()
+	if !bundled.Embedded {
+		t.Skip("bundled files are not embedded")
+	}
+
+	const fileName = "/p/a.ts"
+	const edited = "export const a = 1;\nexport class C {}\n"
+
+	// one per script kind, since the script kind is part of the key and is the one part of
+	// it this side works out for itself rather than reading off the program
+	t.Run("the program takes the offered tree", func(t *testing.T) {
+		t.Parallel()
+		for _, testCase := range []struct{ file, text, edited string }{
+			{"/p/f.ts", "export const a = 1;\n", "export const a = 1;\nexport class C {}\n"},
+			{"/p/f.tsx", "export const A = () => <div>hi</div>;\n", "export const A = () => <div>bye</div>;\n"},
+			{"/p/f.mts", "export const a = 1;\n", "export const a = 2;\n"},
+			{"/p/f.cts", "export const a = 1;\n", "export const a = 2;\n"},
+			{"/p/f.js", "export const a = 1;\n", "export const a = 2;\n"},
+			{"/p/f.mjs", "export const a = 1;\n", "export const a = 2;\n"},
+			{"/p/f.cjs", "const a = 1;\n", "const a = 2;\n"},
+			{"/p/f.jsx", "export const A = () => <div>hi</div>;\n", "export const A = () => <div>bye</div>;\n"},
+			{"/p/f.d.ts", "export declare const a: number;\n", "export declare const a: string;\n"},
+			{"/p/f.json", `{"a":1}`, `{"a":2}`},
+		} {
+			t.Run(testCase.file, func(t *testing.T) {
+				t.Parallel()
+				s := newParseSession(t, map[string]string{testCase.file: testCase.text},
+					map[string]any{"allowJs": true, "resolveJsonModule": true, "jsx": "react"})
+				defer s.close()
+
+				offered := s.offer(t, testCase.file, testCase.edited)
+				s.commit(t, testCase.file, testCase.edited)
+				assert.Equal(t, s.program().GetSourceFileByPath(tspath.Path(testCase.file)), offered)
+			})
+		}
+	})
+
+	// module detection from a package.json is the one parse option the file's own text and
+	// name do not settle, and it is read off the program the client named
+	t.Run("the program takes it under a package scope it cannot see", func(t *testing.T) {
+		t.Parallel()
+		const scopedFileName = "/p/scoped.js"
+		s := newParseSession(t, map[string]string{
+			scopedFileName:    "const a = 1;\n",
+			"/p/package.json": `{"type":"module"}`,
+		}, map[string]any{"allowJs": true, "module": "nodenext", "moduleResolution": "nodenext"})
+		defer s.close()
+
+		const scopedEdited = "const a = 2;\n"
+		offered := s.offer(t, scopedFileName, scopedEdited)
+		assert.Assert(t, offered.ParseOptions().ExternalModuleIndicatorOptions.Force)
+		s.commit(t, scopedFileName, scopedEdited)
+		assert.Equal(t, s.program().GetSourceFileByPath(tspath.Path(scopedFileName)), offered)
+	})
+
+	t.Run("text the file system does not have is not taken", func(t *testing.T) {
+		t.Parallel()
+		s := newParseSession(t, map[string]string{fileName: "export const a = 1;\n"}, nil)
+		defer s.close()
+
+		offered := s.offer(t, fileName, edited)
+		s.commit(t, fileName, "export const a = 2;\n")
+		fromProgram := s.program().GetSourceFileByPath(tspath.Path(fileName))
+		assert.Assert(t, fromProgram != offered)
+		assert.Equal(t, fromProgram.Text(), "export const a = 2;\n")
+	})
+
+	t.Run("a path no program holds is dropped", func(t *testing.T) {
+		t.Parallel()
+		s := newParseSession(t, map[string]string{fileName: "export const a = 1;\n"}, nil)
+		defer s.close()
+
+		const strayFileName = "/p/stray.ts"
+		s.offer(t, strayFileName, edited)
+		s.commit(t, fileName, edited)
+		assert.Assert(t, s.program().GetSourceFileByPath(tspath.Path(strayFileName)) == nil)
+	})
 }
 
 // TestParseSourceFileWithoutASnapshot checks the endpoint answers with no snapshot named
@@ -325,6 +428,7 @@ const parseSessionConfigFileName = "/p/tsconfig.json"
 type parseSession struct {
 	session   *Session
 	project   *project.Session
+	utils     *projecttestutil.SessionUtils
 	snapshot  SnapshotID
 	projectID ProjectID
 }
@@ -346,12 +450,12 @@ func newParseSession(t *testing.T, files map[string]string, compilerOptions map[
 	assert.NilError(t, err)
 	initial[parseSessionConfigFileName] = string(configText)
 
-	projectSession, _ := projecttestutil.SetupWithOptions(initial, &project.SessionOptions{
+	projectSession, utils := projecttestutil.SetupWithOptions(initial, &project.SessionOptions{
 		CurrentDirectory:   "/",
 		DefaultLibraryPath: bundled.LibPath(),
 		PositionEncoding:   lsproto.PositionEncodingKindUTF8,
 	})
-	s := &parseSession{session: NewSession(projectSession, nil), project: projectSession}
+	s := &parseSession{session: NewSession(projectSession, nil), project: projectSession, utils: utils}
 	response, err := s.session.handleUpdateSnapshot(context.Background(), &UpdateSnapshotParams{
 		OpenProjects: []DocumentIdentifier{{FileName: parseSessionConfigFileName}},
 	})
@@ -360,6 +464,31 @@ func newParseSession(t *testing.T, files map[string]string, compilerOptions map[
 	s.snapshot = response.Snapshot
 	s.projectID = response.Projects[0].Id
 	return s
+}
+
+// offer parses text the way the endpoint does, and hands back the tree so a caller can
+// check what became of it. What handleParseSourceFile does with the tree is encode it.
+func (s *parseSession) offer(t *testing.T, fileName string, text string) *ast.SourceFile {
+	t.Helper()
+	params := &ParseSourceFileParams{Snapshot: s.snapshot, Project: s.projectID}
+	path := tspath.Path(fileName)
+	return s.project.ParseSourceFile(ast.SourceFileParseOptions{
+		FileName:                       fileName,
+		Path:                           path,
+		ExternalModuleIndicatorOptions: s.session.externalModuleIndicatorOptionsFor(params, fileName, path),
+	}, text)
+}
+
+// commit writes text where the compiler reads it and builds the snapshot that picks it up,
+// which is the flush a client's held-back edit reaches the compiler through.
+func (s *parseSession) commit(t *testing.T, fileName string, text string) {
+	t.Helper()
+	assert.NilError(t, s.utils.FS().WriteFile(fileName, text))
+	response, err := s.session.handleUpdateSnapshot(context.Background(), &UpdateSnapshotParams{
+		FileChanges: &APIFileChanges{Changed: []DocumentIdentifier{{FileName: fileName}}},
+	})
+	assert.NilError(t, err)
+	s.snapshot = response.Snapshot
 }
 
 func (s *parseSession) program() *compiler.Program {
