@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/microsoft/typescript-go/internal/bundled"
 	"github.com/microsoft/typescript-go/internal/json"
 	"github.com/microsoft/typescript-go/internal/vfs"
 )
@@ -74,6 +75,18 @@ func (fs *callbackFS) SetConnection(ctx context.Context, conn Conn) {
 	fs.conn = conn
 }
 
+// delegates reports whether the named callback should handle the given path.
+//
+// Bundled paths — the lib.d.ts files embedded in the executable under the
+// "bundled:///" scheme — are always served by the base filesystem instead. The
+// compiler asks for them by default, and the client has no such files, so
+// delegating them would leave the program with no default library at all. Every
+// other path goes to the client when the callback is enabled, which is what lets
+// a caller-supplied library folder be read through the callbacks as usual.
+func (fs *callbackFS) delegates(name string, path string) bool {
+	return fs.isEnabled(name) && !bundled.IsBundled(path)
+}
+
 // isEnabled returns true if the named callback is enabled.
 func (fs *callbackFS) isEnabled(name string) bool {
 	return fs.enabledCallbacks[name]
@@ -104,7 +117,7 @@ func (fs *callbackFS) UseCaseSensitiveFileNames() bool {
 //   - null (not found, no fallback): {"content": null}
 //   - string content: {"content": "..."}
 func (fs *callbackFS) ReadFile(path string) (contents string, ok bool) {
-	if fs.isEnabled(callbackReadFile) {
+	if fs.delegates(callbackReadFile, path) {
 		result, err := fs.call(callbackReadFile, path)
 		if err != nil {
 			panic(err)
@@ -127,7 +140,7 @@ func (fs *callbackFS) ReadFile(path string) (contents string, ok bool) {
 
 // FileExists implements vfs.FS.
 func (fs *callbackFS) FileExists(path string) bool {
-	if fs.isEnabled(callbackFileExists) {
+	if fs.delegates(callbackFileExists, path) {
 		result, err := fs.call(callbackFileExists, path)
 		if err != nil {
 			panic(err)
@@ -141,7 +154,7 @@ func (fs *callbackFS) FileExists(path string) bool {
 
 // DirectoryExists implements vfs.FS.
 func (fs *callbackFS) DirectoryExists(path string) bool {
-	if fs.isEnabled(callbackDirectoryExists) {
+	if fs.delegates(callbackDirectoryExists, path) {
 		result, err := fs.call(callbackDirectoryExists, path)
 		if err != nil {
 			panic(err)
@@ -155,7 +168,7 @@ func (fs *callbackFS) DirectoryExists(path string) bool {
 
 // GetAccessibleEntries implements vfs.FS.
 func (fs *callbackFS) GetAccessibleEntries(path string) vfs.Entries {
-	if fs.isEnabled(callbackGetAccessibleEntries) {
+	if fs.delegates(callbackGetAccessibleEntries, path) {
 		result, err := fs.call(callbackGetAccessibleEntries, path)
 		if err != nil {
 			panic(err)
@@ -181,7 +194,7 @@ func (fs *callbackFS) GetAccessibleEntries(path string) vfs.Entries {
 
 // Realpath implements vfs.FS.
 func (fs *callbackFS) Realpath(path string) string {
-	if fs.isEnabled(callbackRealpath) {
+	if fs.delegates(callbackRealpath, path) {
 		result, err := fs.call(callbackRealpath, path)
 		if err != nil {
 			panic(err)
