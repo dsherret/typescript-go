@@ -140,13 +140,21 @@ export function createWasiImports(options: WasiShimOptions): WasiImports {
          */
         environ_sizes_get(countPtr: number, bufferSizePtr: number): number {
             const data = view();
-            data.setUint32(countPtr, 0, true);
-            data.setUint32(bufferSizePtr, 0, true);
+            data.setUint32(countPtr, environment.length, true);
+            data.setUint32(bufferSizePtr, environment.reduce((size, entry) => size + entry.length + 1, 0), true);
             return errnoSuccess;
         },
 
-        environ_get(): number {
-            return unsupported("environ_get", errnoSuccess);
+        environ_get(environPtr: number, bufferPtr: number): number {
+            const data = view();
+            const memory = bytes();
+            let position = bufferPtr;
+            for (let i = 0; i < environment.length; i++) {
+                data.setUint32(environPtr + i * 4, position, true);
+                for (let c = 0; c < environment[i].length; c++) memory[position++] = environment[i].charCodeAt(c);
+                memory[position++] = 0;
+            }
+            return errnoSuccess;
         },
 
         /**
@@ -260,6 +268,21 @@ const nanosecondsPerMillisecond = 1000000;
 
 /** The argument vector the reactor sees, matching what Node's WASI was given. */
 const args = ["tsgo-wasm"];
+
+/**
+ * The environment the reactor sees.
+ *
+ * Only the Go runtime reads this — nothing in the compiler asks for a variable — so it
+ * carries collector settings and nothing else.
+ *
+ * `GOGC` is here because the reactor was running at the default of 100, collecting every
+ * time the heap doubled. Encoding a syntax tree allocates heavily and briefly, which is
+ * the shape that setting suits worst: profiling a 200-file run put `runtime.growMemory`
+ * at the top of the whole profile, with the collector's scan and write-barrier frames
+ * behind it. Growing the heap is not free here the way it is natively — it is a
+ * `memory.grow` on the module's linear memory, which the host may satisfy by moving it.
+ */
+const environment = ["GOGC=400"];
 
 function realtimeNanoseconds() {
     // Date.now() is milliseconds, and the reactor asks for nanoseconds; pairing
