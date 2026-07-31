@@ -125,6 +125,7 @@ import type {
     LiteralType,
     NumberLiteralType,
     ObjectType,
+    RenameOptions,
     StringLiteralType,
     StringMappingType,
     SubstitutionType,
@@ -142,7 +143,7 @@ import type {
 
 export { documentURIToFileName, fileNameToDocumentURI } from "../path.ts";
 export { CheckFlags, CompletionItemKind, DiagnosticCategory, ElementFlags, EmitOnly, ModifierFlags, ModuleKind, NodeBuilderFlags, ObjectFlags, SignatureFlags, SignatureKind, SymbolFlags, TypeFlags, TypePredicateKind };
-export type { APIOptions, AssertsIdentifierTypePredicate, AssertsThisTypePredicate, BigIntLiteralType, BooleanLiteralType, ClientSocketOptions, ClientSpawnOptions, CompilerOptions, CompletionEntry, CompletionInfo, CompletionOptions, ConditionalType, Diagnostic, DocumentIdentifier, DocumentPosition, EmitOutput, EmitOutputFile, EmitResult, FreshableType, GetImportEditsForSymbolsOptions, IdentifierTypePredicate, ImportAdderAction, IndexedAccessType, IndexInfo, IndexType, InterfaceType, IntersectionType, IntrinsicType, JSDocTagInfo, LiteralType, LSPConnectionOptions, NumberLiteralType, ObjectType, ParsedCommandLine, ProjectConfig, ProjectReference, RequestTiming, SourceFileMetadata, StringLiteralType, StringMappingType, SubstitutionType, TemplateLiteralType, TextEdit, ThisTypePredicate, TimingAccumulators, TimingInfo, TupleType, Type, TypeAcquisition, TypeParameter, TypePredicate, TypePredicateBase, TypeReference, UnionOrIntersectionType, UnionType };
+export type { APIOptions, AssertsIdentifierTypePredicate, AssertsThisTypePredicate, BigIntLiteralType, BooleanLiteralType, ClientSocketOptions, ClientSpawnOptions, CompilerOptions, CompletionEntry, CompletionInfo, CompletionOptions, ConditionalType, Diagnostic, DocumentIdentifier, DocumentPosition, EmitOutput, EmitOutputFile, EmitResult, FreshableType, GetImportEditsForSymbolsOptions, IdentifierTypePredicate, ImportAdderAction, IndexedAccessType, IndexInfo, IndexType, InterfaceType, IntersectionType, IntrinsicType, JSDocTagInfo, LiteralType, LSPConnectionOptions, NumberLiteralType, ObjectType, ParsedCommandLine, ProjectConfig, ProjectReference, RenameOptions, RequestTiming, SourceFileMetadata, StringLiteralType, StringMappingType, SubstitutionType, TemplateLiteralType, TextEdit, ThisTypePredicate, TimingAccumulators, TimingInfo, TupleType, Type, TypeAcquisition, TypeParameter, TypePredicate, TypePredicateBase, TypeReference, UnionOrIntersectionType, UnionType };
 
 interface EmitOutputResponse {
     readonly emitSkipped: boolean;
@@ -162,10 +163,23 @@ export class API<FromLSP extends boolean = false> {
     private parseDecoder = new Wtf8Decoder();
     readonly internal: InternalAPI;
 
+    // @sync-skip-block-start
+    // The one member the two APIs cannot share. `ensureInitialized` is async here, and a
+    // getter cannot await it, so the version is only there once something else has
+    // initialized the session. The sync API's can initialize on demand and so always has
+    // one — which is why this is expressed as a directive rather than left to drift.
     /** The compiler's own version, e.g. `7.1.0-dev`. Undefined until initialized. */
     get version(): string | undefined {
         return this.compilerVersion;
     }
+    // @sync-skip-block-end
+    // @sync-only-start
+    // /** The compiler's own version, e.g. `7.1.0-dev`. */
+    // get version(): string {
+    //     this.ensureInitialized();
+    //     return this.compilerVersion!;
+    // }
+    // @sync-only-end
 
     constructor(options: APIOptions | LSPConnectionOptions = {}) {
         this.client = new Client(options);
@@ -869,14 +883,20 @@ export class Project {
     /**
      * Returns the edits that rename the symbol at `position`, grouped by file.
      * An empty result means the element cannot be renamed.
+     *
+     * `useAliasesForRename` overrides the providePrefixAndSuffixTextForRename
+     * user preference: when false, a shorthand property assignment, binding
+     * element, or import/export specifier is renamed outright instead of being
+     * given the old name as an alias.
      */
-    async rename(file: DocumentIdentifier, position: number, newName: string): Promise<readonly FileTextEdits[]> {
+    async rename(file: DocumentIdentifier, position: number, newName: string, options: RenameOptions = {}): Promise<readonly FileTextEdits[]> {
         const data = await this.client.apiRequest<FileTextEdits[]>("rename", {
             snapshot: this.snapshotId,
             project: this.id,
             file,
             position,
             newName,
+            ...(options.useAliasesForRename !== undefined ? { useAliasesForRename: options.useAliasesForRename } : {}),
         });
         return data ?? [];
     }
@@ -906,6 +926,7 @@ export class Project {
     /**
      * Returns the quick fixes available for the `[pos, end)` span. When
      * `errorCodes` is given, only fixes addressing those diagnostics are returned.
+     * `quotePreference` decides the quotes a fix writes a new string literal with.
      */
     async getCodeFixes(
         file: DocumentIdentifier,
@@ -1001,10 +1022,12 @@ export class Program {
         // find that out is the trade. What it buys is not having to decide from here which
         // entries could match, which is what the two values being asked for are for. A path
         // the cache has nothing for cannot match anything and is not asked about.
+        // @sync-skip-block-start
         //
         // Nothing rests on the cache still holding what `has` saw: another request may run
         // over this await and displace the offer or release the entry, and all that can do
         // is turn a hit into a miss, which is the fetch below.
+        // @sync-skip-block-end
         if (this.sourceFileCache.has(path)) {
             const identity = await this.client.apiRequest<SourceFileIdentity | null>("getSourceFileIdentity", {
                 snapshot: this.snapshotId,
